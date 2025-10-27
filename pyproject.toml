@@ -6,3 +6,7 @@ requires-python = ">=3.10"
 
 [tool.pytest]
 addopts = "-q"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

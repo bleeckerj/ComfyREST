@@ -211,8 +211,8 @@ Examples:
     )
     
     parser.add_argument('workflow', help='Path to workflow JSON file')
-    parser.add_argument('--server', default='http://172.29.144.1:8188', 
-                       help='ComfyUI server URL (default: http://172.29.144.1:8188)')
+    parser.add_argument('--server', default='http://127.0.0.1:8188', 
+                       help='ComfyUI server URL (default: http://127.0.0.1:8188)')
     parser.add_argument('--params', help='Parameter overrides in format "node.param=value,node.param=value"')
     parser.add_argument('--list-params', action='store_true', 
                        help='List all available parameters and exit')
@@ -237,7 +237,7 @@ Examples:
     class Args:
         def __init__(self):
             self.workflow = workflow_file
-            self.server = 'http://172.29.144.1:8188'
+            self.server = 'http://127.0.0.1:8188'
             self.params = None
             self.list_params = False
             self.save = None

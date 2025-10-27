@@ -102,7 +102,7 @@ def format_parameter_value(value: Any, indent: int = 0) -> str:
         return str(value)
 
 
-def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown Workflow") -> str:
+def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown Workflow", server_address: str = None) -> str:
     """Generate an interactive HTML visualization of the workflow using Tailwind CSS."""
     # Sort nodes by ID for consistent layout
     sorted_nodes = sorted(workflow.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
@@ -110,6 +110,44 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
     # Generate timestamp
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Try to get real dropdown values from server if available
+    server_object_info = None
+    if server_address:
+        try:
+            import requests
+            response = requests.get(f"{server_address}/object_info", timeout=5)
+            if response.status_code == 200:
+                server_object_info = response.json()
+                print(f"✓ Retrieved object info from {server_address}")
+        except Exception as e:
+            print(f"⚠️ Could not query server {server_address}: {e}")
+    
+    def get_dropdown_values(class_type: str, param_name: str) -> list:
+        """Get actual dropdown values from server object info if available"""
+        if not server_object_info:
+            return []
+        
+        node_info = server_object_info.get(class_type, {})
+        if not node_info:
+            return []
+            
+        input_info = node_info.get("input", {})
+        if not input_info:
+            return []
+            
+        required_inputs = input_info.get("required", {})
+        optional_inputs = input_info.get("optional", {})
+        
+        param_info = required_inputs.get(param_name) or optional_inputs.get(param_name)
+        if not param_info or not isinstance(param_info, list) or len(param_info) == 0:
+            return []
+            
+        # Check if first element is a list (dropdown options)
+        if isinstance(param_info[0], list):
+            return param_info[0]
+            
+        return []
     
     # Build HTML using simple string concatenation
     html = f'''<!DOCTYPE html>
@@ -119,6 +157,23 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{workflow_name} - ComfyUI Workflow</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .copy-btn {{ 
+            transition: all 0.2s; 
+        }}
+        .copy-btn:hover {{ 
+            background-color: #3b82f6; 
+            color: white; 
+        }}
+        .copy-success {{ 
+            background-color: #10b981 !important; 
+            color: white !important; 
+        }}
+        .dropdown-values {{ 
+            max-height: 120px; 
+            overflow-y: auto; 
+        }}
+    </style>
 </head>
 <body class="bg-gray-50 p-6">
     <div class="max-w-7xl mx-auto">
@@ -186,15 +241,56 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
                     <div class="mt-2 text-xs space-y-1">
 '''
         
-        # Add all parameters
+        # Add all parameters with enhanced features
         for param_name, param_value in inputs.items():
             if isinstance(param_value, list) and len(param_value) == 2:
+                # Connection parameter
                 html += f'                        <div class="bg-blue-50 p-1 rounded flex justify-between"><span class="text-blue-700 font-medium">{param_name}:</span><span class="text-blue-600">→ Node {param_value[0]}</span></div>\n'
             else:
+                # Direct parameter - add copy functionality
                 value_str = str(param_value)
+                full_value_str = value_str
                 if len(value_str) > 30:
                     value_str = value_str[:27] + "..."
-                html += f'                        <div class="bg-gray-50 p-1 rounded flex justify-between"><span class="font-medium">{param_name}:</span><span class="text-gray-600 break-all">{value_str}</span></div>\n'
+                
+                # Escape quotes for JavaScript and HTML
+                escaped_value = full_value_str.replace('"', '&quot;').replace("'", '&#39;')
+                copy_command = f'--node {node_id} --param {param_name} "{full_value_str}"'
+                # For the onclick attribute, we need to escape differently
+                js_escaped_command = copy_command.replace('"', "'").replace("'", "\\''")
+                
+                # Get real dropdown values from server if available
+                dropdown_hint = ""
+                dropdown_values = get_dropdown_values(class_type, param_name)
+                
+                if dropdown_values:
+                    # We have real dropdown values from the server
+                    values_preview = ', '.join(str(v) for v in dropdown_values[:5])
+                    if len(dropdown_values) > 5:
+                        values_preview += f', ... ({len(dropdown_values)} total)'
+                    dropdown_hint = f' <span class="text-xs text-green-600 cursor-help" title="Valid options: {values_preview}">🔽</span>'
+                elif param_name.endswith('_name') and param_name in ['sampler_name', 'scheduler', 'model_name', 'vae_name', 'lora_name']:
+                    dropdown_hint = ' <span class="text-xs text-orange-600 cursor-help" title="Dropdown parameter - server query needed for valid options">⚠️</span>'
+                elif param_name.endswith('_mode') or param_name.endswith('_method') or param_name.endswith('_type'):
+                    dropdown_hint = ' <span class="text-xs text-orange-600 cursor-help" title="Parameter likely has predefined options">⚠️</span>'
+                
+                # Use data attributes instead of inline JavaScript to avoid quote issues
+                copy_id = f"copy_{node_id}_{param_name.replace(' ', '_')}"
+                html += f'''                        <div class="bg-gray-50 p-1 rounded">
+                            <div class="flex justify-between items-center">
+                                <span class="font-medium">{param_name}:</span>
+                                <div class="flex items-center gap-1">
+                                    <span class="text-gray-600 break-all" title="{escaped_value}">{value_str}</span>{dropdown_hint}
+                                    <button class="copy-btn ml-1 px-1 py-0.5 text-xs bg-gray-200 rounded hover:bg-blue-500 hover:text-white transition-colors" 
+                                            data-copy-text="{copy_command}"
+                                            id="{copy_id}"
+                                            title="Copy command line argument">
+                                        📋
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+'''
         
         html += '''                    </div>
                 </details>
@@ -206,7 +302,16 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
         
         <div class="mt-8 p-6 bg-white rounded-lg shadow-sm border">
             <h3 class="text-xl font-semibold mb-4">Command Line Reference</h3>
-            <div class="text-sm text-gray-600 mb-4">Use these commands to modify parameters:</div>
+            <div class="mb-4 p-3 bg-blue-50 rounded-lg">
+                <div class="text-sm text-blue-800 font-medium mb-2">💡 Pro Tips:</div>
+                <ul class="text-xs text-blue-700 space-y-1">
+                    <li>• Click the 📋 button next to any parameter to copy its command line argument</li>
+                    <li>• Look for 🔽 icons to see dropdown/enum parameter options</li>
+                    <li>• Parameters with → symbols are connections to other nodes (not modifiable via CLI)</li>
+                    <li>• Use "All parameters" details to see the full parameter name and value</li>
+                </ul>
+            </div>
+            <div class="text-sm text-gray-600 mb-4">Example commands for key nodes:</div>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
 '''
     
@@ -229,6 +334,110 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
             </div>
         </div>
     </div>
+
+    <!-- Copy Success Toast -->
+    <div id="copyToast" class="fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded shadow-lg transform translate-x-full transition-transform duration-300 z-50">
+        <div class="flex items-center gap-2">
+            <span>✓</span>
+            <span>Copied to clipboard!</span>
+        </div>
+    </div>
+
+    <script>
+        function copyToClipboard(text, button) {
+            console.log('Copying text:', text);  // Debug log
+            
+            // Try modern clipboard API first
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(() => {
+                    showCopySuccess(button);
+                }).catch((err) => {
+                    console.error('Clipboard API failed:', err);
+                    fallbackCopy(text, button);
+                });
+            } else {
+                // Use fallback method
+                fallbackCopy(text, button);
+            }
+        }
+        
+        function fallbackCopy(text, button) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            textArea.style.top = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            
+            try {
+                const successful = document.execCommand('copy');
+                if (successful) {
+                    showCopySuccess(button);
+                } else {
+                    showCopyError(button);
+                }
+            } catch (err) {
+                console.error('Fallback copy failed:', err);
+                showCopyError(button);
+            }
+            
+            document.body.removeChild(textArea);
+        }
+        
+        function showCopySuccess(button) {
+            const originalText = button.innerHTML;
+            const originalClass = button.className;
+            
+            button.innerHTML = '✓';
+            button.className = button.className.replace('bg-gray-200', 'bg-green-500 text-white');
+            
+            // Show toast
+            const toast = document.getElementById('copyToast');
+            if (toast) {
+                toast.style.transform = 'translateX(0)';
+                setTimeout(() => {
+                    toast.style.transform = 'translateX(100%)';
+                }, 2000);
+            }
+            
+            setTimeout(() => {
+                button.innerHTML = originalText;
+                button.className = originalClass;
+            }, 2000);
+        }
+        
+        function showCopyError(button) {
+            const originalText = button.innerHTML;
+            button.innerHTML = '✗';
+            button.style.backgroundColor = '#ef4444';
+            button.style.color = 'white';
+            
+            setTimeout(() => {
+                button.innerHTML = originalText;
+                button.style.backgroundColor = '';
+                button.style.color = '';
+            }, 2000);
+        }
+
+        // Set up clipboard functionality for all copy buttons
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Setting up clipboard functionality...');
+            
+            // Add click handlers to all copy buttons
+            document.querySelectorAll('.copy-btn').forEach(button => {
+                button.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const textToCopy = this.getAttribute('data-copy-text');
+                    console.log('Copy button clicked, text:', textToCopy);
+                    copyToClipboard(textToCopy, this);
+                });
+            });
+            
+            console.log(`Found ${document.querySelectorAll('.copy-btn').length} copy buttons`);
+        });
+    </script>
 </body>
 </html>'''
     
@@ -393,6 +602,7 @@ Examples:
     parser.add_argument('--output', '-o', help='Output markdown file (default: print to stdout)')
     parser.add_argument('--format', choices=['detailed', 'table', 'html'], default='detailed',
                        help='Output format: detailed (markdown), table (markdown), html (interactive)')
+    parser.add_argument('--server', help='ComfyUI server address (e.g., http://127.0.0.1:8188) for querying real dropdown values')
     
     args = parser.parse_args()
     
@@ -408,7 +618,7 @@ Examples:
     try:
         if args.format == 'html':
             workflow_name = Path(args.workflow).stem.replace('-', ' ').replace('_', ' ').title()
-            catalog = generate_html_visual(workflow, workflow_name)
+            catalog = generate_html_visual(workflow, workflow_name, args.server)
         else:
             catalog = generate_markdown_catalog(workflow, args.format)
     except Exception as e:
