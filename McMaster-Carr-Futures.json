@@ -1,0 +1,329 @@
+{
+  "3": {
+    "inputs": {
+      "seed": 218460466475041,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "66",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "78",
+        0
+      ],
+      "latent_image": [
+        "76",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "6": {
+    "inputs": {
+      "text": [
+        "161",
+        0
+      ],
+      "clip": [
+        "38",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "38": {
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "39": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "66": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "115",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "76": {
+    "inputs": {
+      "width": [
+        "120",
+        0
+      ],
+      "height": [
+        "120",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "EmptySD3LatentImage"
+    }
+  },
+  "78": {
+    "inputs": {
+      "conditioning": [
+        "6",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "ConditioningZeroOut"
+    }
+  },
+  "108": {
+    "inputs": {
+      "filename_prefix": "img",
+      "images": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "115": {
+    "inputs": {
+      "model_name": "svdq-int4_r32-qwen-image-lightningv1.0-4steps.safetensors",
+      "cpu_offload": "auto",
+      "num_blocks_on_gpu": 1,
+      "use_pin_memory": "disable"
+    },
+    "class_type": "NunchakuQwenImageDiTLoader",
+    "_meta": {
+      "title": "Nunchaku Qwen-Image DiT Loader"
+    }
+  },
+  "116": {
+    "inputs": {
+      "image": "Teenage_Engineering_TP7_Back_875739-00b9acd23aa6e4bc8e1862b53f22aba0.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "119": {
+    "inputs": {
+      "STRING": "A high-contrast grayscale product photograph displays a compact, robust mechanical device with a distinctly industrial aesthetic. The object features a cylindrical central body with deep, evenly spaced cooling fins running lengthwise, suggesting efficient heat dissipation. Attached to one end is a large, segmented, turbine-like housing with a series of curved, ribbed vanes radiating outward, giving it a dynamic, almost armored appearance. On top of the main body sits a rectangular module with beveled edges and subtle fasteners, hinting at an integrated control or interface unit. The base consists of a sturdy, rectangular platform with two symmetrical, cylindrical extensions at the front, each capped with a transparent, lens-like cover, evoking the sense of concealed sensors or ports. The entire assembly is rendered in sharp grayscale, with crisp shadows and highlights, set against a seamless white background, emphasizing its enigmatic, functional, and slightly speculative design—reminiscent of a component from a futuristic, secretive technological apparatus."
+    },
+    "class_type": "Griptape Display: Text",
+    "_meta": {
+      "title": "Griptape Display: Text"
+    }
+  },
+  "120": {
+    "inputs": {
+      "megapixel": "1.0",
+      "aspect_ratio": "3:2 (Golden Landscape)",
+      "divisible_by": "64",
+      "custom_ratio": false,
+      "custom_aspect_ratio": "1:1"
+    },
+    "class_type": "FluxResolutionNode",
+    "_meta": {
+      "title": "Flux Resolution Calc"
+    }
+  },
+  "121": {
+    "inputs": {
+      "text": "1216 x 832",
+      "anything": [
+        "120",
+        2
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Show Any"
+    }
+  },
+  "123": {
+    "inputs": {
+      "rgthree_comparer": {
+        "images": [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_svlso_00001_.png&type=temp&subfolder=&rand=0.8145288063853711"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/api/view?filename=rgthree.compare._temp_svlso_00002_.png&type=temp&subfolder=&rand=0.3869284997438792"
+          }
+        ]
+      },
+      "image_a": [
+        "8",
+        0
+      ],
+      "image_b": [
+        "116",
+        0
+      ]
+    },
+    "class_type": "Image Comparer (rgthree)",
+    "_meta": {
+      "title": "Image Comparer (rgthree)"
+    }
+  },
+  "126": {
+    "inputs": {
+      "STRING": "A rectangular device with a smooth, seamless surface framed by a metallic border, featuring a large, central panel with a subtle texture reminiscent of synthetic leather. The edges are precisely machined, with visible screws and a knurled cylindrical component protruding from the bottom left, suggesting a functional, mechanical interface. On the right side, a slender metallic lever or handle is mounted, hinting at a possible locking or adjustment mechanism. The overall form is minimal and industrial, with a sense of engineered purpose, yet its exact function is ambiguous—evoking the aura of a speculative, science-fictional component, perhaps a control module or interface panel for advanced machinery. Rendered in high-contrast grayscale on a clean white background, the product appears both contemporary and enigmatic, as if sourced from a secretive Rockwell International catalog of futuristic electromechanical parts. No text or branding is visible, emphasizing its mysterious, utilitarian character.",
+      "INPUT": [
+        "170",
+        0
+      ]
+    },
+    "class_type": "Griptape Display: Text",
+    "_meta": {
+      "title": "Griptape Display: Text"
+    }
+  },
+  "152": {
+    "inputs": {
+      "STRING": "",
+      "max_subtasks": 3
+    },
+    "class_type": "Griptape Create: Agent",
+    "_meta": {
+      "title": "Griptape Create: Agent"
+    }
+  },
+  "160": {
+    "inputs": {
+      "STRING": "Alter the text prompt with significant adjustments in the description enough to achieve a new version of the described image. Maintain the feature that the object is on a neutral white background as it would be for a product photograph for a mechanical part that was meant to be represented in a product catalog. Any engravings that may appear should be very detailed and legible.",
+      "max_subtasks": 3,
+      "agent": [
+        "152",
+        1
+      ],
+      "input_string": [
+        "126",
+        0
+      ]
+    },
+    "class_type": "Griptape Run: Agent",
+    "_meta": {
+      "title": "Griptape Run: Agent"
+    }
+  },
+  "161": {
+    "inputs": {
+      "STRING": "A compact, square-shaped mechanical unit is displayed against a pristine white background, as if prepared for a high-end product catalog. The device’s body is constructed from brushed stainless steel, with a matte finish that subtly reflects light. Its front face is dominated by a recessed, circular dial made from dark, finely grained composite material, reminiscent of carbon fiber, set flush within the square frame. Around the dial, a series of meticulously engraved calibration markings and numerals are clearly visible, rendered with exceptional clarity and precision.\n\nThe corners of the square housing are chamfered, and each is secured with a polished, hexagonal bolt, their edges crisply defined. Emerging from the top right corner is a robust, ribbed toggle switch, its surface knurled for grip, suggesting manual operation or adjustment. On the left edge, a slender, articulated arm extends outward, terminating in a small, pivoting latch—hinting at a locking or release function.\n\nThe overall design is starkly functional yet visually striking, blending industrial minimalism with a sense of advanced engineering. The object’s purpose remains ambiguous, evoking the impression of a specialized control unit or sensor module from a speculative, near-future technology. All engravings are sharply detailed and easily legible, but the device bears no branding or text beyond its functional markings, preserving its enigmatic, utilitarian allure.",
+      "INPUT": [
+        "160",
+        0
+      ]
+    },
+    "class_type": "Griptape Display: Text",
+    "_meta": {
+      "title": "Griptape Display: Text"
+    }
+  },
+  "166": {
+    "inputs": {
+      "model": "gpt-5-nano",
+      "max_attempts_on_fail": 2,
+      "temperature": 0.1,
+      "seed": 2048,
+      "use_native_tools": true,
+      "max_tokens": -1,
+      "min_p": 0.1,
+      "response_format": "default",
+      "api_key_env_var": "OPENAI_API_KEY",
+      "image_generation_model": "dall-e-3",
+      "size": "1024x1024",
+      "embedding_model": "text-embedding-ada-002",
+      "text_to_speech_model": "tts-1",
+      "voice": "alloy",
+      "audio_transcription_model": "whisper-1",
+      "Get OpenAI API Key": null
+    },
+    "class_type": "Griptape Agent Config: OpenAI Drivers",
+    "_meta": {
+      "title": "Griptape Agent Config: OpenAI Drivers"
+    }
+  },
+  "170": {
+    "inputs": {
+      "STRING": "",
+      "image": [
+        "116",
+        0
+      ],
+      "input_string": [
+        "171",
+        0
+      ]
+    },
+    "class_type": "Griptape Run: Image Description",
+    "_meta": {
+      "title": "Griptape Run: Image Description"
+    }
+  },
+  "171": {
+    "inputs": {
+      "text": "Desribe the image without preamble and with enough detail to prompt a variation of it as a product rendering on a neutral white background. The visual variation should describe a slightly contemporary and functional yet somehow slightly unknown and speculative - like a piece of secret technology from Rockwell International that is science-fictional and a bit like a part that might be used for some futuristic mechanical-electrical contrivance, and the product appeared in a catalog of part. IF there are aspects of the object that are familiar, mention them. The image should be rendered as a high contrast grayscale product photograph. There is no text at all. Just a plain view of the product. The product photograph is grayscale only with a clean white background."
+    },
+    "class_type": "ttN text",
+    "_meta": {
+      "title": "text"
+    }
+  }
+}
