@@ -21,7 +21,7 @@ ComfyREST/
 │   └── client.py                 # ComfyClient with REST/WebSocket support
 ├── scripts/                      # Automation and utility tools
 │   ├── run_workflow_with_params.py    # 🌟 Universal workflow runner
-│   ├── workflow_catalog.py            # 📖 Generate workflow documentation  
+│   ├── workflow_catalog.py            # � Comfy Light Table - workflow docs + directory ingestion  
 │   ├── generate_all_catalogs.py       # 📚 Batch catalog generator
 │   ├── discover_endpoints.py          # 🔍 API endpoint discovery
 │   └── convert_workflow_to_api.py     # 🔄 UI→API format converter
@@ -106,8 +106,10 @@ python3 scripts/workflow_catalog.py output.webp --output catalog.html
 # Extract workflow from JPEG and generate catalog
 python3 scripts/workflow_catalog.py photo.jpg --output catalog.html
 
-# BATCH PROCESSING
-# Process all JSON workflows and images in directory (generates all formats)
+# BATCH PROCESSING - Single Directory
+python3 scripts/workflow_catalog.py --ingest ./my-outputs --output-dir ./catalog
+
+# BATCH PROCESSING - Multiple Workflows (generates all formats)
 python3 scripts/generate_all_catalogs.py
 ```
 
@@ -347,6 +349,73 @@ python3 scripts/generate_all_catalogs.py
 # Process image and save extracted workflow as JSON
 python3 scripts/workflow_catalog.py image.png --output extracted-workflow.html
 # Also creates: extracted-workflow.json (the extracted API-format workflow)
+```
+
+### 💡 **Comfy Light Table** - Directory Ingestion & Bulk Catalog Generation
+
+The "Comfy Light Table" feature addresses the fundamental challenge of AI/generative workflow management: **the pain is real** when dealing with the excess output that generative workflows naturally produce. ComfyUI workflows tend to create lots of "extra stuff" - intermediate images, variations, experiments - and keeping track of what works becomes overwhelming.
+
+This tool mitigates that workflow management burden by providing comprehensive directory ingestion and automated catalog generation, born from real-world challenges of managing hundreds of generated images and their associated workflows.
+
+*(The original intent was to create templates for automated "hands-off" agentic workflows that produced lots of output and thus needed a way to backcast to their origins.)*
+
+#### Directory Ingestion Commands
+
+```bash
+# NEW: Use --ingest as synonym for --directory (more intuitive)
+python3 scripts/workflow_catalog.py --ingest ./my-comfy-outputs --output-dir ./catalog
+
+# Scan entire ComfyUI output directory and generate master catalog
+python3 scripts/workflow_catalog.py --directory ~/ComfyUI/output --output-dir ./light-table-catalog
+
+# Process with custom extensions and catalog name
+python3 scripts/workflow_catalog.py --ingest ./renders \
+  --extensions .png .webp .jpg \
+  --master-catalog gallery.html \
+  --output-dir ./workflow-gallery
+
+# Include comprehensive diagnostics for troubleshooting
+python3 scripts/workflow_catalog.py --ingest ./test-images \
+  --comprehensive-diagnostics \
+  --output-dir ./debug-catalog
+```
+
+#### What Comfy Light Table Provides
+
+1. **📂 Recursive Directory Scanning**: Finds all images with embedded ComfyUI workflows
+2. **🏷️ Smart File Analysis**: Extracts workflows from PNG, WebP, and JPEG metadata  
+3. **📑 Master Gallery**: Creates a searchable, filterable overview of all discovered workflows
+4. **📄 Individual Pages**: Detailed workflow documentation for each image
+5. **🔍 Visual Node Mapping**: Interactive displays showing workflow structure
+6. **📊 Batch Statistics**: Overview of what was found vs. what couldn't be processed
+7. **💡 Illumination Theme**: Consistent "Comfy Light Table" branding across all generated pages
+
+#### Example Directory Processing Output
+
+```
+./light-table-catalog/
+├── index.html                    # Master gallery (searchable/filterable)
+├── workflows/                    # Individual workflow detail pages
+│   ├── ComfyUI_00506_workflow.html
+│   ├── img_00002_workflow.html
+│   ├── img_00075_workflow.html
+│   └── ComfyUI_00863_workflow.html
+└── extracted_workflows/          # Raw JSON workflows (API format)
+    ├── ComfyUI_00506.json
+    ├── img_00002.json
+    ├── img_00075.json
+    └── ComfyUI_00863.json
+```
+
+The master catalog provides:
+- **Visual thumbnails** of all processed images
+- **Workflow statistics** (node counts, types, complexity)
+- **Search and filtering** by name, node type, or creation date
+- **Direct links** to detailed workflow analysis pages
+- **Processing diagnostics** showing success/failure rates
+
+This transforms an overwhelming directory of generated images into an organized, searchable knowledge base of your ComfyUI experimentation history.
+
 ```
 
 ## 🚀 Development & Contributing

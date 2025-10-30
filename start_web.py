@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-ComfyREST Web Interface Launcher
+💡 Comfy Light Table Launcher
 
-Checks dependencies and starts the web interface server.
+Checks dependencies and starts the Comfy Light Table web interface server.
+Illuminate your ComfyUI workflows with drag-and-drop processing.
 """
 
 import sys
@@ -38,8 +39,8 @@ def check_dependencies():
     return True
 
 def main():
-    print("🚀 ComfyREST Web Interface Launcher")
-    print("=" * 40)
+    print("� Comfy Light Table Launcher")
+    print("=" * 32)
     
     # Check if we're in the right directory
     if not Path("scripts/workflow_catalog.py").exists():

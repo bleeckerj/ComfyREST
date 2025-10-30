@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
-ComfyREST Web Interface
+💡 Comfy Light Table
 
-A web-based drag-and-drop interface for processing ComfyUI workflows from images and JSON files.
+A web-based drag-and-drop interface for illuminating ComfyUI workflows from images and JSON files.
 Features real-time processing, interactive visualization, and batch operations.
+
+Like a photographer's light table for reviewing film, Comfy Light Table helps you examine, 
+analyze, and understand your ComfyUI workflows with clarity and ease.
 """
 
 import asyncio
@@ -35,8 +38,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="ComfyREST Web Interface",
-    description="Drag-and-drop workflow processing for ComfyUI",
+    title="💡 Comfy Light Table",
+    description="Illuminate your ComfyUI workflows with drag-and-drop processing",
     version="1.0.0"
 )
 
@@ -309,7 +312,7 @@ def get_interface_html() -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ComfyREST Web Interface</title>
+    <title>💡 Comfy Light Table</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .drop-zone {
@@ -342,7 +345,7 @@ def get_interface_html() -> str:
         <!-- Header -->
         <header class="text-center mb-12">
             <h1 class="text-5xl font-bold text-gray-900 mb-4">
-                🚀 ComfyREST Web Interface
+                � Comfy Light Table
             </h1>
             <p class="text-xl text-gray-600 max-w-2xl mx-auto">
                 Drag and drop your ComfyUI images or workflow JSON files to extract, analyze, and visualize workflows instantly
@@ -375,6 +378,19 @@ def get_interface_html() -> str:
             <!-- Task cards will be inserted here -->
         </div>
     </div>
+
+    <!-- Footer -->
+    <footer class="mt-16 py-8 border-t border-gray-200 text-center text-gray-500">
+        <div class="flex items-center justify-center space-x-2">
+            <span class="text-2xl">💡</span>
+            <span class="font-medium">Comfy Light Table</span>
+            <span>•</span>
+            <span class="text-sm">Illuminate your ComfyUI workflows</span>
+        </div>
+        <div class="mt-2 text-xs">
+            Built on ComfyREST • Open Source Workflow Analysis
+        </div>
+    </footer>
 
     <script>
         // WebSocket connection for real-time updates
