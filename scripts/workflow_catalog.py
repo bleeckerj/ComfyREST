@@ -2,13 +2,16 @@
 """
 ComfyUI Workflow Catalog Generator
 
-This script analyzes a ComfyUI workflow JSON file and generates a human-readable
-catalog in Markdown format, showing all nodes, their connections, and parameters.
+This script analyzes ComfyUI workflows from either JSON files or images with embedded
+metadata, and generates rich HTML catalogs with workflow visualization.
 
 Usage:
     python workflow_catalog.py workflow.json
-    python workflow_catalog.py workflow.json --output catalog.md
-    python workflow_catalog.py workflow.json --format table
+    python workflow_catalog.py image.png 
+    python workflow_catalog.py workflow.json --output catalog.html --format html
+    python workflow_catalog.py workflow.json --image associated_image.png
+    
+Note: For the most advanced features, use enhanced_workflow_catalog.py instead.
 """
 
 import argparse
@@ -16,6 +19,225 @@ import json
 import sys
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
+
+# Import image processing if available
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+
+def extract_from_png(image_path: Path) -> Optional[Dict]:
+    """Extract workflow JSON from PNG metadata using Pillow."""
+    try:
+        with Image.open(image_path) as img:
+            # Common keys where ComfyUI stores workflow data
+            workflow_keys = ['workflow', 'prompt', 'comfy_workflow', 'workflow_json', 'ComfyUI']
+            
+            # First, try known keys
+            for key in workflow_keys:
+                if key in img.info:
+                    try:
+                        if isinstance(img.info[key], str):
+                            return json.loads(img.info[key])
+                        elif isinstance(img.info[key], bytes):
+                            return json.loads(img.info[key].decode('utf-8'))
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+            
+            # Fallback: scan all string values for JSON
+            for key, value in img.info.items():
+                if isinstance(value, (str, bytes)):
+                    try:
+                        text = value.decode('utf-8') if isinstance(value, bytes) else value
+                        data = json.loads(text)
+                        # Check if it looks like a ComfyUI workflow
+                        if isinstance(data, dict) and ('nodes' in data or 'class_type' in str(data)):
+                            return data
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                        
+    except Exception as e:
+        print(f"PNG extraction failed: {e}")
+    
+    return None
+
+
+def extract_from_webp(image_path: Path) -> Optional[Dict]:
+    """Extract workflow JSON from WebP metadata using Pillow and optional exiftool."""
+    # Try Pillow first
+    try:
+        with Image.open(image_path) as img:
+            # Try EXIF data
+            exif = img.getexif()
+            if exif:
+                for tag_id, value in exif.items():
+                    if isinstance(value, (str, bytes)):
+                        try:
+                            text = value.decode('utf-8') if isinstance(value, bytes) else value
+                            data = json.loads(text)
+                            if isinstance(data, dict) and ('nodes' in data or 'class_type' in str(data)):
+                                return data
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            continue
+    except Exception as e:
+        print(f"WebP Pillow extraction failed: {e}")
+    
+    # Fallback to exiftool if available
+    return extract_with_exiftool(image_path)
+
+
+def extract_with_exiftool(image_path: Path) -> Optional[Dict]:
+    """Extract metadata using exiftool command-line tool."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['exiftool', '-j', '-G', str(image_path)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            exiftool_data = json.loads(result.stdout)
+            if exiftool_data:
+                # Scan all string fields for JSON
+                for item in exiftool_data:
+                    for key, value in item.items():
+                        if isinstance(value, str):
+                            try:
+                                data = json.loads(value)
+                                if isinstance(data, dict) and ('nodes' in data or 'class_type' in str(data)):
+                                    return data
+                            except json.JSONDecodeError:
+                                continue
+                                
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
+        pass
+    
+    return None
+
+
+def ui_to_api_format(ui_workflow: Dict) -> Dict[str, Any]:
+    """Convert ComfyUI's UI workflow format to API format."""
+    if not ui_workflow:
+        return {}
+        
+    # If it's already in API format (dict keyed by node IDs), return as-is
+    if isinstance(ui_workflow, dict) and all(str(k).isdigit() or isinstance(k, int) for k in ui_workflow.keys()):
+        return ui_workflow
+    
+    # Handle UI format with nodes array
+    if 'nodes' in ui_workflow and 'links' in ui_workflow:
+        api_workflow = {}
+        nodes = ui_workflow['nodes']
+        links = ui_workflow.get('links', [])
+        
+        # Create node mapping first
+        for node in nodes:
+            node_id = str(node.get('id'))
+            class_type = node.get('type', 'Unknown')
+            
+            # Extract inputs from node properties
+            inputs = {}
+            
+            # Get widget values (parameters)
+            if 'widgets_values' in node and node['widgets_values']:
+                # Map widget values to input names - this is approximate
+                widget_values = node['widgets_values']
+                if isinstance(widget_values, list):
+                    # For common node types, we know the input names
+                    if class_type == 'CheckpointLoaderSimple' and len(widget_values) > 0:
+                        inputs['ckpt_name'] = widget_values[0]
+                    elif class_type == 'CLIPTextEncode' and len(widget_values) > 0:
+                        inputs['text'] = widget_values[0]
+                    elif class_type == 'EmptyLatentImage' and len(widget_values) >= 3:
+                        inputs['width'] = widget_values[0]
+                        inputs['height'] = widget_values[1]
+                        inputs['batch_size'] = widget_values[2]
+                    elif class_type == 'KSampler' and len(widget_values) >= 6:
+                        inputs['seed'] = widget_values[0]
+                        inputs['steps'] = widget_values[1]
+                        inputs['cfg'] = widget_values[2]
+                        inputs['sampler_name'] = widget_values[3]
+                        inputs['scheduler'] = widget_values[4]
+                        inputs['denoise'] = widget_values[5]
+                    else:
+                        # Generic mapping for unknown node types
+                        for i, value in enumerate(widget_values):
+                            inputs[f'input_{i}'] = value
+            
+            api_workflow[node_id] = {
+                "class_type": class_type,
+                "inputs": inputs
+            }
+            
+            # Add metadata if available
+            if 'title' in node:
+                api_workflow[node_id]["_meta"] = {"title": node['title']}
+        
+        # Process links to add connections to inputs
+        for link in links:
+            if len(link) >= 5:
+                link_id, from_node, from_output, to_node, to_input = link[:5]
+                to_node_id = str(to_node)
+                from_node_id = str(from_node)
+                
+                if to_node_id in api_workflow:
+                    # Map output socket numbers to input names for common connections
+                    input_name = f'input_{to_input}' if isinstance(to_input, int) else str(to_input)
+                    
+                    # For known node types, use proper input names
+                    to_class = api_workflow[to_node_id].get('class_type', '')
+                    if to_class == 'CLIPTextEncode' and to_input == 0:
+                        input_name = 'clip'
+                    elif to_class == 'KSampler':
+                        if to_input == 0:
+                            input_name = 'model'
+                        elif to_input == 1:
+                            input_name = 'positive'
+                        elif to_input == 2:
+                            input_name = 'negative'  
+                        elif to_input == 3:
+                            input_name = 'latent_image'
+                    elif to_class == 'VAEDecode':
+                        if to_input == 0:
+                            input_name = 'samples'
+                        elif to_input == 1:
+                            input_name = 'vae'
+                    elif to_class == 'SaveImage' and to_input == 0:
+                        input_name = 'images'
+                    
+                    api_workflow[to_node_id]["inputs"][input_name] = [from_node_id, from_output]
+        
+        return api_workflow
+    
+    # If we can't convert, return as-is
+    return ui_workflow
+
+
+def extract_workflow_from_image(image_path: Path) -> Optional[Dict[str, Any]]:
+    """Extract ComfyUI workflow from image based on file extension."""
+    if not PIL_AVAILABLE:
+        print("Warning: Pillow not available. Cannot extract workflows from images.")
+        return None
+    
+    suffix = image_path.suffix.lower()
+    
+    if suffix == '.png':
+        raw_workflow = extract_from_png(image_path)
+    elif suffix in {'.webp', '.jpg', '.jpeg'}:
+        raw_workflow = extract_from_webp(image_path)
+    else:
+        print(f"Unsupported image format: {suffix}")
+        return None
+    
+    if raw_workflow:
+        # Convert UI format to API format that ComfyREST expects
+        return ui_to_api_format(raw_workflow)
+    
+    return None
 
 
 def analyze_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,7 +324,46 @@ def format_parameter_value(value: Any, indent: int = 0) -> str:
         return str(value)
 
 
-def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown Workflow", server_address: str = None) -> str:
+def find_associated_image(json_path: str, search_dirs: List[str] = None, explicit_image: str = None) -> Optional[str]:
+    """Find image associated with workflow JSON file."""
+    import os
+    from pathlib import Path
+    
+    # If explicit image provided, use it
+    if explicit_image and os.path.exists(explicit_image):
+        return explicit_image
+    
+    if search_dirs is None:
+        search_dirs = [os.path.dirname(json_path)]
+    
+    json_stem = Path(json_path).stem
+    image_extensions = ['.png', '.webp', '.jpg', '.jpeg']
+    
+    for search_dir in search_dirs:
+        if not os.path.exists(search_dir):
+            continue
+            
+        for ext in image_extensions:
+            # Try exact match
+            candidate = os.path.join(search_dir, f"{json_stem}{ext}")
+            if os.path.exists(candidate):
+                return candidate
+            
+            # Try pattern matching
+            try:
+                for img_file in os.listdir(search_dir):
+                    if img_file.lower().endswith(tuple(image_extensions)):
+                        img_stem = Path(img_file).stem
+                        if json_stem.lower() in img_stem.lower() or img_stem.lower() in json_stem.lower():
+                            return os.path.join(search_dir, img_file)
+            except (OSError, PermissionError):
+                continue
+    
+    return None
+
+
+def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown Workflow", 
+                        server_address: str = None, image_path: str = None) -> str:
     """Generate an interactive HTML visualization of the workflow using Tailwind CSS."""
     # Sort nodes by ID for consistent layout
     sorted_nodes = sorted(workflow.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
@@ -110,6 +371,69 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
     # Generate timestamp
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Prepare image section if image is provided
+    import os
+    import base64
+    image_section = ""
+    if image_path and os.path.exists(image_path):
+        try:
+            with open(image_path, 'rb') as f:
+                image_data = base64.b64encode(f.read()).decode('utf-8')
+            
+            # Determine MIME type
+            ext = os.path.splitext(image_path)[1].lower()
+            mime_type = {
+                '.png': 'image/png',
+                '.webp': 'image/webp', 
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg'
+            }.get(ext, 'image/png')
+            
+            image_data_url = f"data:{mime_type};base64,{image_data}"
+            image_filename = os.path.basename(image_path)
+            
+            image_section = f'''
+        <!-- Hero Image Section -->
+        <div class="mb-8 bg-white rounded-lg shadow-sm border overflow-hidden">
+            <div class="relative">
+                <img src="{image_data_url}" 
+                     alt="Generated Output" 
+                     class="w-full max-h-96 object-contain bg-gray-50">
+                <div class="absolute top-4 right-4">
+                    <span class="bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm">
+                        🖼️ Generated Output
+                    </span>
+                </div>
+            </div>
+            <div class="p-4 bg-gradient-to-r from-blue-50 to-purple-50">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-lg font-semibold text-gray-900">Visual Result</h2>
+                        <p class="text-sm text-gray-600">📁 {image_filename}</p>
+                    </div>
+                    <div class="text-right text-xs text-gray-500">
+                        <div>This image was generated</div>
+                        <div>using the workflow below</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+            '''
+        except Exception as e:
+            print(f"Warning: Could not load image {image_path}: {e}")
+            image_section = f'''
+        <!-- Image Load Error -->
+        <div class="mb-8 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <div class="flex items-center gap-2">
+                <span class="text-yellow-600">⚠️</span>
+                <div>
+                    <h3 class="font-medium text-yellow-800">Image Not Available</h3>
+                    <p class="text-sm text-yellow-700">Could not load: {os.path.basename(image_path)}</p>
+                </div>
+            </div>
+        </div>
+            '''
     
     # Try to get real dropdown values from server if available
     server_object_info = None
@@ -190,6 +514,8 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
             </div>
         </header>
 
+        {image_section}
+
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
 '''
     
@@ -252,13 +578,15 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
                 full_value_str = value_str
                 if len(value_str) > 30:
                     value_str = value_str[:27] + "..."
-                
-                # Escape quotes for JavaScript and HTML
-                escaped_value = full_value_str.replace('"', '&quot;').replace("'", '&#39;')
+
+                # Escape display value for HTML attributes
+                escaped_value = str(full_value_str).replace('"', '&quot;').replace("'", '&#39;')
+
+                # Build the CLI copy command and ensure it is HTML-escaped for safe insertion
                 copy_command = f'--node {node_id} --param {param_name} "{full_value_str}"'
-                # For the onclick attribute, we need to escape differently
-                js_escaped_command = copy_command.replace('"', "'").replace("'", "\\''")
-                
+                import html as _html
+                escaped_copy_command = _html.escape(copy_command, quote=True)
+
                 # Get real dropdown values from server if available
                 dropdown_hint = ""
                 dropdown_values = get_dropdown_values(class_type, param_name)
@@ -282,9 +610,9 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
                                 <div class="flex items-center gap-1">
                                     <span class="text-gray-600 break-all" title="{escaped_value}">{value_str}</span>{dropdown_hint}
                                     <button class="copy-btn ml-1 px-1 py-0.5 text-xs bg-gray-200 rounded hover:bg-blue-500 hover:text-white transition-colors" 
-                                            data-copy-text="{copy_command}"
+                                            data-copy-text="{escaped_copy_command}"
                                             id="{copy_id}"
-                                            title="Copy command line argument">
+                                            aria-label="Copy command line argument">
                                         📋
                                     </button>
                                 </div>
@@ -598,27 +926,67 @@ Examples:
         """
     )
     
-    parser.add_argument('workflow', help='Path to workflow JSON file')
-    parser.add_argument('--output', '-o', help='Output markdown file (default: print to stdout)')
-    parser.add_argument('--format', choices=['detailed', 'table', 'html'], default='detailed',
+    parser.add_argument('input', help='Path to workflow JSON file or PNG/WebP image with embedded workflow')
+    parser.add_argument('--output', '-o', help='Output file (default: print to stdout)')
+    parser.add_argument('--format', choices=['detailed', 'table', 'html'], default='html',
                        help='Output format: detailed (markdown), table (markdown), html (interactive)')
     parser.add_argument('--server', help='ComfyUI server address (e.g., http://127.0.0.1:8188) for querying real dropdown values')
+    parser.add_argument('--image', help='Associated image file to display with workflow (for JSON inputs)')
+    parser.add_argument('--image-dir', help='Directory to search for associated images')
     
     args = parser.parse_args()
     
-    # Load workflow
-    try:
-        with open(args.workflow, 'r') as f:
-            workflow = json.load(f)
-    except Exception as e:
-        print(f"Error loading workflow: {e}", file=sys.stderr)
+    # Determine input type and load workflow
+    input_path = Path(args.input)
+    workflow = None
+    source_image_path = None
+    
+    if input_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'}:
+        # Extract workflow from image
+        print(f"Extracting workflow from image: {input_path}")
+        workflow = extract_workflow_from_image(input_path)
+        source_image_path = str(input_path)
+        
+        if not workflow:
+            print(f"Error: No ComfyUI workflow found in image {input_path}", file=sys.stderr)
+            return 1
+            
+    elif input_path.suffix.lower() == '.json':
+        # Load workflow from JSON
+        try:
+            with open(input_path, 'r') as f:
+                workflow = json.load(f)
+        except Exception as e:
+            print(f"Error loading workflow JSON: {e}", file=sys.stderr)
+            return 1
+    else:
+        print(f"Error: Unsupported file type {input_path.suffix}. Use .json, .png, or .webp files.", file=sys.stderr)
         return 1
+    
+    # Find associated image
+    import os
+    associated_image = None
+    if source_image_path:
+        # We extracted from an image, use that
+        associated_image = source_image_path
+    elif args.image:
+        # Explicit image provided
+        associated_image = args.image
+    elif args.image_dir:
+        # Search in specified directory
+        associated_image = find_associated_image(str(input_path), [args.image_dir])
+    else:
+        # Try to find image in same directory as workflow
+        associated_image = find_associated_image(str(input_path))
+    
+    if associated_image:
+        print(f"✓ Found associated image: {os.path.basename(associated_image)}")
     
     # Generate catalog
     try:
         if args.format == 'html':
-            workflow_name = Path(args.workflow).stem.replace('-', ' ').replace('_', ' ').title()
-            catalog = generate_html_visual(workflow, workflow_name, args.server)
+            workflow_name = input_path.stem.replace('-', ' ').replace('_', ' ').title()
+            catalog = generate_html_visual(workflow, workflow_name, args.server, associated_image)
         else:
             catalog = generate_markdown_catalog(workflow, args.format)
     except Exception as e:

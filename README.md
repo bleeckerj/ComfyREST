@@ -43,6 +43,16 @@ cd ComfyREST
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+
+# Optional: Enhanced WebP support (recommended)
+# macOS
+brew install exiftool
+
+# Ubuntu/Debian
+sudo apt install libimage-exiftool-perl
+
+# Windows (with Chocolatey)
+choco install exiftool
 ```
 
 ### 2. Basic Workflow Execution
@@ -73,11 +83,12 @@ python3 scripts/run_workflow_with_params.py workflow.json \
 
 ## 📖 Workflow Documentation
 
-Generate human-readable catalogs of your workflows:
+Generate human-readable catalogs from your workflows or images:
 
 ```bash
+# FROM JSON WORKFLOWS
 # Generate detailed workflow reference (Markdown)
-python3 scripts/workflow_catalog.py McMaster-Carr-Futures.json --output my-workflow-ref.md
+python3 scripts/workflow_catalog.py workflow.json --output my-workflow-ref.md
 
 # Generate compact table format (Markdown)
 python3 scripts/workflow_catalog.py workflow.json --format table
@@ -85,13 +96,37 @@ python3 scripts/workflow_catalog.py workflow.json --format table
 # Generate interactive HTML visualization 🆕
 python3 scripts/workflow_catalog.py workflow.json --format html --output workflow.html
 
-# Process all JSON workflows in directory (generates all 3 formats)
+# FROM IMAGES WITH EMBEDDED WORKFLOWS 🆕
+# Extract workflow from PNG and generate catalog
+python3 scripts/workflow_catalog.py generated_image.png --output catalog.html
+
+# Extract workflow from WebP and generate catalog
+python3 scripts/workflow_catalog.py output.webp --output catalog.html
+
+# Extract workflow from JPEG and generate catalog
+python3 scripts/workflow_catalog.py photo.jpg --output catalog.html
+
+# BATCH PROCESSING
+# Process all JSON workflows and images in directory (generates all formats)
 python3 scripts/generate_all_catalogs.py
 ```
+
+### 🖼️ **NEW: Image Workflow Extraction**
+
+ComfyREST now supports extracting ComfyUI workflows directly from images with embedded metadata:
+
+- **📷 PNG Support**: Extracts from tEXt/iTXt metadata chunks
+- **🌐 WebP Support**: Uses EXIF data + exiftool fallback
+- **📸 JPEG Support**: EXIF metadata extraction
+- **🔄 Format Conversion**: Automatically converts UI format to API format
+- **🎨 Visual Integration**: Generated catalogs include the original image
+
+**Supported metadata fields**: `workflow`, `prompt`, `comfy_workflow`, `workflow_json`, `ComfyUI`
 
 The generated catalogs include:
 - **📝 Markdown formats**: Detailed docs and quick reference tables
 - **🌐 Interactive HTML**: Visual node cards with expandable details, color-coded by type
+- **🖼️ Image Display**: Hero section showing the generated image (when available)
 - **📊 Node overview** with types, connections, and statistics
 - **🔧 Parameter reference** showing what can be modified via command line
 - **📈 Data flow visualization** (Mermaid diagrams in Markdown)  
@@ -234,11 +269,38 @@ python3 scripts/run_workflow_with_params.py workflow.json \
   --node 3 --param seed 42
 ```
 
+**Image Processing Issues** 🆕
+```bash
+# ❌ "No ComfyUI workflow found in image"
+# Make sure the image was saved with workflow metadata in ComfyUI
+# Use "Save (API format)" option in ComfyUI when saving images
+
+# ❌ "Pillow not available"
+pip install pillow
+
+# ❌ Enhanced WebP support
+# Install exiftool for better WebP metadata extraction
+brew install exiftool  # macOS
+sudo apt install libimage-exiftool-perl  # Ubuntu
+
+# ✅ Check what metadata is available in an image
+python3 -c "
+from PIL import Image
+img = Image.open('your_image.png')
+print('Available metadata keys:', list(img.info.keys()))
+"
+
+# ✅ Test image workflow extraction
+python3 scripts/workflow_catalog.py your_image.png --format html
+```
+
 ### Requirements
 
 - **ComfyUI server** running and accessible
 - **Python 3.10+**
+- **Pillow (PIL)**: For image metadata extraction (PNG/WebP/JPEG)
 - **Optional**: `websocket-client` for real-time monitoring
+- **Optional**: `exiftool` for enhanced WebP metadata extraction
 
 ## 📝 Examples
 
@@ -260,6 +322,31 @@ python3 scripts/run_workflow_with_params.py McMaster-Carr-Futures.json \
   --server http://172.29.144.1:8188 \
   --node 116 --param image "/mnt/c/Users/user/Pictures/image.png" \
   --websocket
+```
+
+### Image Workflow Processing Examples 🆕
+
+```bash
+# Extract workflow from ComfyUI-generated PNG and create interactive catalog
+python3 scripts/workflow_catalog.py ComfyUI_00042_.png --output workflow-from-image.html
+
+# Process WebP image with embedded workflow
+python3 scripts/workflow_catalog.py output.webp --format html --output webp-workflow.html
+
+# Extract workflow from JPEG and generate markdown documentation
+python3 scripts/workflow_catalog.py generated.jpg --format detailed --output workflow-docs.md
+
+# Batch process directory containing both JSON workflows and images
+python3 scripts/generate_all_catalogs.py
+# This will now process:
+# - All .json workflow files  
+# - All .png images with embedded workflows
+# - All .webp images with embedded workflows
+# - All .jpg/.jpeg images with embedded workflows
+
+# Process image and save extracted workflow as JSON
+python3 scripts/workflow_catalog.py image.png --output extracted-workflow.html
+# Also creates: extracted-workflow.json (the extracted API-format workflow)
 ```
 
 ## 🚀 Development & Contributing
