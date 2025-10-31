@@ -32,6 +32,16 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+# Import database functionality if available
+try:
+    # Add parent directory to path to import database package
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from database import get_database_manager, WorkflowFileManager, initialize_database, DatabaseManager
+    from database.models import WorkflowFile
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
+
 
 @dataclass
 class WorkflowImageData:
@@ -732,6 +742,85 @@ def ui_to_api_format(ui_workflow: Dict) -> Dict[str, Any]:
     
     # If we can't convert, return as-is
     return ui_workflow
+
+
+# Database helper functions
+def get_database_workflow_manager(database_url: str = None) -> Optional[WorkflowFileManager]:
+    """Get database workflow manager if available."""
+    if not DATABASE_AVAILABLE:
+        return None
+    
+    try:
+        # Initialize database if needed
+        if database_url:
+            # Check if it's just a filename (assume SQLite)
+            if not database_url.startswith(('sqlite://', 'postgresql://', 'mysql://', 'oracle://')):
+                # It's just a filename, convert to SQLite URL
+                from pathlib import Path
+                if not database_url.startswith('/'):
+                    # Relative path, make it absolute from current directory
+                    database_url = str(Path(database_url).resolve())
+                database_url = f"sqlite:///{database_url}"
+            
+            # Create a new database manager with custom URL
+            db_manager = DatabaseManager(database_url)
+        else:
+            # Use the default database manager
+            db_manager = get_database_manager()
+        
+        # Ensure tables are created
+        db_manager.create_tables()
+        
+        return WorkflowFileManager(db_manager)
+    except Exception as e:
+        print(f"⚠️ Database not available: {e}")
+        return None
+
+
+def store_workflow_in_database(workflow_manager: WorkflowFileManager, 
+                              workflow_data: WorkflowImageData,
+                              tags: List[str] = None,
+                              collections: List[str] = None,
+                              notes: str = None) -> bool:
+    """Store workflow in database if manager is available."""
+    if not workflow_manager:
+        return False
+    
+    try:
+        # Extract models from workflow for auto-tagging
+        analysis = analyze_workflow(workflow_data.workflow)
+        models_info = analysis.get('models', {})
+        
+        # Auto-generate tags from models
+        auto_tags = []
+        if models_info.get('checkpoints'):
+            auto_tags.extend(f"checkpoint:{model}" for model in models_info['checkpoints'])
+        if models_info.get('loras'):
+            auto_tags.extend(f"lora:{model}" for model in models_info['loras'])
+        if models_info.get('embeddings'):
+            auto_tags.extend(f"embedding:{model}" for model in models_info['embeddings'])
+        
+        # Combine provided tags with auto-generated ones
+        all_tags = (tags or []) + auto_tags
+        
+        # Add default collection if none provided
+        if not collections:
+            collections = ["workflow-catalog-import"]
+        
+        # Store in database
+        workflow_manager.add_workflow_file(
+            file_path=workflow_data.image_path,
+            workflow_data=workflow_data.workflow,
+            image_metadata=workflow_data.metadata,
+            tags=all_tags,
+            collections=collections,
+            notes=notes
+        )
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Failed to store workflow in database: {e}")
+        return False
 
 
 def extract_workflow_from_image(image_path: Path, preserve_original_format: bool = False) -> Optional[Dict[str, Any]]:
@@ -1566,6 +1655,11 @@ Examples:
   
   # Show only files with workflows
   %(prog)s --ingest ./test-images --workflows-only --output-dir ./workflows-catalog
+  
+  # Database integration (generates catalogs AND stores in database)
+  %(prog)s --directory ./outputs --database --tags "batch-import,project-alpha"
+  %(prog)s --directory ./outputs --database "my_catalog.db" --collections "personal-art"
+  %(prog)s --directory ./outputs --database "sqlite:///full/path/catalog.db" --tags "archived"
         """
     )
     
@@ -1585,6 +1679,10 @@ Examples:
     parser.add_argument('--server', help='ComfyUI server address (e.g., http://127.0.0.1:8188) for querying real dropdown values')
     parser.add_argument('--image', help='Associated image file to display with workflow (for JSON inputs)')
     parser.add_argument('--image-dir', help='Directory to search for associated images')
+    parser.add_argument('--database', '--db', nargs='?', const=True, help='Store workflows in database (provide filename for SQLite, full URL for other databases, or use default)')
+    parser.add_argument('--tags', help='Comma-separated tags to add to database entries')
+    parser.add_argument('--collections', help='Comma-separated collections to add to database entries')
+    parser.add_argument('--notes', help='Notes to add to database entries')
     
     args = parser.parse_args()
     
@@ -1839,6 +1937,38 @@ def directory_scan_mode(args):
     cache = load_workflow_cache(output_dir)
     print(f"♻️ Loaded cache with {len(cache)} entries")
     
+    # Initialize database if requested or available
+    workflow_manager = None
+    database_enabled = False
+    
+    # Check for explicit --database flag
+    if hasattr(args, 'database') and args.database is not None:
+        database_url = args.database if args.database != True else None
+        workflow_manager = get_database_workflow_manager(database_url)
+        database_enabled = workflow_manager is not None
+        if database_enabled:
+            print(f"💾 Database enabled: storing workflows in database")
+        else:
+            print(f"⚠️ Database requested but not available")
+    
+    # Auto-detect database if not explicitly disabled
+    elif DATABASE_AVAILABLE:
+        workflow_manager = get_database_workflow_manager()
+        database_enabled = workflow_manager is not None
+        if database_enabled:
+            print(f"💾 Database auto-detected: storing workflows in database")
+    
+    # Parse additional database metadata
+    tags = []
+    if hasattr(args, 'tags') and args.tags:
+        tags = [tag.strip() for tag in args.tags.split(',')]
+    
+    collections = []
+    if hasattr(args, 'collections') and args.collections:
+        collections = [col.strip() for col in args.collections.split(',')]
+    
+    notes = getattr(args, 'notes', None)
+    
     # Phase 1: Scan for images
     image_paths = scan_directory_for_images(directory, args.extensions)
     if not image_paths:
@@ -1877,6 +2007,25 @@ def directory_scan_mode(args):
     # Save cache if updated
     if cache_updated:
         save_workflow_cache(output_dir, cache)
+    
+    # Phase 2.5: Store workflows in database if enabled
+    if database_enabled and workflow_images:
+        print(f"\n💾 Storing {len(workflow_images)} workflows in database...")
+        stored_count = 0
+        for workflow_data in workflow_images:
+            success = store_workflow_in_database(
+                workflow_manager=workflow_manager,
+                workflow_data=workflow_data,
+                tags=tags,
+                collections=collections,
+                notes=notes
+            )
+            if success:
+                stored_count += 1
+        
+        print(f"✅ Stored {stored_count}/{len(workflow_images)} workflows in database")
+        if stored_count < len(workflow_images):
+            print(f"⚠️ {len(workflow_images) - stored_count} workflows failed to store (possibly duplicates)")
     
     # Phase 3: Generate individual catalogs for successful workflows
     individual_pages = generate_individual_catalogs(workflow_images, output_dir, args.server)
@@ -2795,6 +2944,60 @@ def single_file_mode(args):
     
     if associated_image:
         print(f"✓ Found associated image: {os.path.basename(associated_image)}")
+    
+    # Store in database if enabled
+    workflow_manager = None
+    database_enabled = False
+    
+    # Check for explicit --database flag
+    if hasattr(args, 'database') and args.database is not None:
+        database_url = args.database if args.database != True else None
+        workflow_manager = get_database_workflow_manager(database_url)
+        database_enabled = workflow_manager is not None
+        if database_enabled:
+            print(f"💾 Database enabled: storing workflow in database")
+        else:
+            print(f"⚠️ Database requested but not available")
+    
+    # Auto-detect database if not explicitly disabled
+    elif DATABASE_AVAILABLE:
+        workflow_manager = get_database_workflow_manager()
+        database_enabled = workflow_manager is not None
+        if database_enabled:
+            print(f"💾 Database auto-detected: storing workflow in database")
+    
+    # Store workflow in database
+    if database_enabled:
+        # Parse additional database metadata
+        tags = []
+        if hasattr(args, 'tags') and args.tags:
+            tags = [tag.strip() for tag in args.tags.split(',')]
+        
+        collections = []
+        if hasattr(args, 'collections') and args.collections:
+            collections = [col.strip() for col in args.collections.split(',')]
+        
+        notes = getattr(args, 'notes', None)
+        
+        # Create WorkflowImageData for storage
+        workflow_data = WorkflowImageData(
+            image_path=input_path,
+            workflow=workflow,
+            metadata={'source': 'single-file-import', 'associated_image': associated_image}
+        )
+        
+        success = store_workflow_in_database(
+            workflow_manager=workflow_manager,
+            workflow_data=workflow_data,
+            tags=tags,
+            collections=collections,
+            notes=notes
+        )
+        
+        if success:
+            print(f"✅ Workflow stored in database")
+        else:
+            print(f"⚠️ Failed to store workflow in database")
     
     # Generate catalog
     try:
