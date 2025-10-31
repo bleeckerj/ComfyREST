@@ -37,8 +37,9 @@ except ImportError:
 class WorkflowImageData:
     """Data structure for ComfyUI image with embedded workflow."""
     image_path: Path
-    workflow: Dict
+    workflow: Dict  # API format (for compatibility)
     metadata: Dict
+    original_workflow: Optional[Dict] = None  # UI format (for model extraction)
     
     @property
     def workflow_summary(self) -> Dict:
@@ -237,10 +238,14 @@ def detect_comfyui_images(image_paths: List[Path]) -> List[WorkflowImageData]:
             # Extract additional metadata
             metadata = extract_image_metadata(image_path)
             
+            # Also get the original format for model extraction
+            original_workflow = extract_workflow_from_image(image_path, preserve_original_format=True)
+            
             workflow_data = WorkflowImageData(
                 image_path=image_path,
                 workflow=workflow,
-                metadata=metadata
+                metadata=metadata,
+                original_workflow=original_workflow
             )
             workflow_images.append(workflow_data)
             found_count += 1
@@ -729,7 +734,7 @@ def ui_to_api_format(ui_workflow: Dict) -> Dict[str, Any]:
     return ui_workflow
 
 
-def extract_workflow_from_image(image_path: Path) -> Optional[Dict[str, Any]]:
+def extract_workflow_from_image(image_path: Path, preserve_original_format: bool = False) -> Optional[Dict[str, Any]]:
     """Extract ComfyUI workflow from image based on file extension."""
     if not PIL_AVAILABLE:
         print("Warning: Pillow not available. Cannot extract workflows from images.")
@@ -746,8 +751,12 @@ def extract_workflow_from_image(image_path: Path) -> Optional[Dict[str, Any]]:
         return None
     
     if raw_workflow:
-        # Convert UI format to API format that ComfyREST expects
-        return ui_to_api_format(raw_workflow)
+        if preserve_original_format:
+            # Return the original format (for model extraction)
+            return raw_workflow
+        else:
+            # Convert UI format to API format that ComfyREST expects
+            return ui_to_api_format(raw_workflow)
     
     return None
 
@@ -763,46 +772,64 @@ def analyze_workflow(workflow: Dict[str, Any]) -> Dict[str, Any]:
         "parameters": {}
     }
     
+    # Handle both old format (nodes as dict keys) and new format (nodes array)
+    nodes = []
+    if 'nodes' in workflow and isinstance(workflow['nodes'], list):
+        # New format: nodes array
+        nodes = workflow['nodes']
+    else:
+        # Old format: nodes as dict keys
+        nodes_dict = {k: v for k, v in workflow.items() if isinstance(v, dict)}
+        nodes = [(node_id, node_data) for node_id, node_data in nodes_dict.items()]
+    
     # Count node types and analyze connections
-    for node_id, node_data in workflow.items():
-        class_type = node_data.get("class_type", "Unknown")
+    for item in nodes:
+        if isinstance(item, tuple):
+            # Old format: (node_id, node_data)
+            node_id, node_data = item
+            class_type = node_data.get("class_type", "Unknown")
+        else:
+            # New format: node object
+            node_data = item
+            node_id = node_data.get("id", "unknown")
+            class_type = node_data.get("type", node_data.get("class_type", "Unknown"))
+            
         analysis["node_types"][class_type] = analysis["node_types"].get(class_type, 0) + 1
         
-        # Check inputs for connections
+        # Check inputs for connections (handle both formats)
         inputs = node_data.get("inputs", {})
-        has_connections = False
+        if isinstance(inputs, list):
+            # New format: inputs is an array of input objects
+            for input_obj in inputs:
+                if isinstance(input_obj, dict) and "link" in input_obj:
+                    analysis["connections"].append({
+                        "from": "unknown",
+                        "to": node_id,
+                        "type": "connection"
+                    })
+        else:
+            # Old format: inputs is a dict
+            has_connections = False
+            
+            for param_name, param_value in inputs.items():
+                # Check if this is a connection (array with node_id and output_index)
+                if isinstance(param_value, list) and len(param_value) == 2:
+                    source_node = param_value[0]
+                    output_index = param_value[1]
+                    analysis["connections"].append({
+                        "from": source_node,
+                        "to": node_id,
+                        "output_index": output_index,
+                        "input_param": param_name
+                    })
+                    has_connections = True
+            
+            # Identify input/output nodes (only for old format)
+            if not has_connections:
+                analysis["input_nodes"].append(node_id)
         
-        for param_name, param_value in inputs.items():
-            # Check if this is a connection (array with node_id and output_index)
-            if isinstance(param_value, list) and len(param_value) == 2:
-                source_node = param_value[0]
-                output_index = param_value[1]
-                analysis["connections"].append({
-                    "from": source_node,
-                    "to": node_id,
-                    "output_index": output_index,
-                    "input_param": param_name
-                })
-                has_connections = True
-        
-        # Identify input/output nodes
-        if not has_connections:
-            analysis["input_nodes"].append(node_id)
-        
-        # Check if this node has outputs (connected to other nodes)
-        is_output = True
-        for other_id, other_data in workflow.items():
-            if other_id == node_id:
-                continue
-            other_inputs = other_data.get("inputs", {})
-            for param_value in other_inputs.values():
-                if isinstance(param_value, list) and len(param_value) == 2 and param_value[0] == node_id:
-                    is_output = False
-                    break
-            if not is_output:
-                break
-        
-        if is_output and class_type in ["SaveImage", "PreviewImage", "Griptape Display: Text"]:
+        # Identify common output node types
+        if class_type in ["SaveImage", "PreviewImage", "Griptape Display: Text"]:
             analysis["output_nodes"].append(node_id)
     
     return analysis
@@ -857,12 +884,26 @@ def extract_models_from_workflow(workflow: Dict[str, Any]) -> Dict[str, List[str
     for node in nodes:
         node_type = node.get('type', '') or node.get('class_type', '')
         widget_values = node.get('widgets_values', [])
+        inputs = node.get('inputs', {})
         
         # Only process loader nodes with model files
         for category, loader_types in loader_type_mapping.items():
             if any(loader in node_type for loader in loader_types):
-                # Extract model filenames from widget_values
+                # Extract model filenames from widget_values (UI format)
                 for value in widget_values:
+                    if isinstance(value, str) and any(ext in value.lower() for ext in ['.safetensors', '.ckpt', '.pt', '.pth', '.bin']):
+                        # Clean up the model name
+                        model_name = value
+                        if '/' in model_name:
+                            model_name = model_name.split('/')[-1]
+                        if '\\' in model_name:
+                            model_name = model_name.split('\\')[-1]
+                        
+                        if model_name and model_name not in models[category]:
+                            models[category].append(model_name)
+                
+                # Also extract from inputs (API format)
+                for key, value in inputs.items():
                     if isinstance(value, str) and any(ext in value.lower() for ext in ['.safetensors', '.ckpt', '.pt', '.pth', '.bin']):
                         # Clean up the model name
                         model_name = value
@@ -1092,7 +1133,7 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
                 </div>
                 <div class="text-right text-sm text-gray-500">
                     <div>Generated: {timestamp}</div>
-                    <div class="mt-1">Illuminate your workflows</div>
+                    <div class="mt-1">Quality of Life Improvements</div>
                 </div>
             </div>
         </header>
@@ -1356,10 +1397,10 @@ def generate_html_visual(workflow: Dict[str, Any], workflow_name: str = "Unknown
             <span class="text-xl">💡</span>
             <span class="font-medium">Comfy Light Table</span>
             <span>•</span>
-            <span class="text-sm">Illuminate your ComfyUI workflows</span>
+            <span class="text-sm">Quality of Life Improvements</span>
         </div>
         <div class="mt-2 text-xs">
-            Built on ComfyREST • Open Source Workflow Analysis
+            Built In Venice Beach • Workflow Analysis
         </div>
     </footer>
 </body>
@@ -1978,8 +2019,15 @@ def generate_master_catalog_html(workflow_images: List[WorkflowImageData], indiv
     
     for workflow_data in workflow_images:
         if workflow_data.workflow:
-            # Extract models and node types
-            models = extract_models_from_workflow(workflow_data.workflow)
+            # Extract models and node types (use same logic as card generation)
+            if hasattr(workflow_data, 'original_workflow') and workflow_data.original_workflow:
+                workflow_for_models = workflow_data.original_workflow
+            else:
+                workflow_for_models = extract_workflow_from_image(workflow_data.image_path, preserve_original_format=True)
+                if not workflow_for_models:
+                    workflow_for_models = workflow_data.workflow
+            
+            models = extract_models_from_workflow(workflow_for_models)
             analysis = analyze_workflow(workflow_data.workflow)
             
             # Separate checkpoints and LoRAs
@@ -2050,7 +2098,6 @@ def generate_master_catalog_html(workflow_images: List[WorkflowImageData], indiv
         <!-- Header -->
         <header class="mb-8 text-center">
             <h1 class="text-4xl font-bold text-gray-900 mb-2">ComfyUI Workflow Catalog</h1>
-            <p class="text-lg text-gray-600 mb-4">Discover and explore ComfyUI workflows from generated images</p>
             <div class="flex justify-center items-center gap-6 text-sm text-gray-500">
                 <div class="flex items-center gap-2">
                     <span class="text-2xl">🖼️</span>
@@ -2190,10 +2237,10 @@ def generate_master_catalog_html(workflow_images: List[WorkflowImageData], indiv
             <span class="text-xl">💡</span>
             <span class="font-medium">Comfy Light Table</span>
             <span>•</span>
-            <span class="text-sm">Illuminate your ComfyUI workflows</span>
+            <span class="text-sm">Quality of Life Improvements</span>
         </div>
         <div class="mt-2 text-xs">
-            Built on ComfyREST • Open Source Workflow Analysis
+            Built In Venice Beach • Workflow Analysis
         </div>
     </footer>
 </body>
@@ -2228,12 +2275,30 @@ def generate_comprehensive_master_catalog_html(analysis_results: List[FileAnalys
     for result in other_files:
         all_cards_html += generate_comprehensive_catalog_card(result, None, 'other_file')
     
+    # Collect all models and node types from workflow files for filtering
+    all_checkpoints = set()
+    all_loras = set()
+    all_node_types = set()
+    
+    for result in workflow_files:
+        if result.models:
+            all_checkpoints.update(result.models.get('checkpoints', []))
+            all_loras.update(result.models.get('loras', []))
+        
+        if result.node_types:
+            all_node_types.update(result.node_types)
+    
+    # Generate filter options HTML
+    checkpoint_options = ''.join([f'<option value="{model}">{model}</option>' for model in sorted(all_checkpoints)])
+    lora_options = ''.join([f'<option value="{lora}">{lora}</option>' for lora in sorted(all_loras)])
+    node_options = ''.join([f'<option value="{node_type}">{node_type}</option>' for node_type in sorted(all_node_types)])
+    
     html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ComfyUI Comprehensive File Catalog</title>
+    <title>ComfyUI Light Table</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .masonry-grid {{
@@ -2277,7 +2342,7 @@ def generate_comprehensive_master_catalog_html(analysis_results: List[FileAnalys
     <div class="max-w-7xl mx-auto">
         <!-- Header -->
         <header class="mb-8 text-center">
-            <h1 class="text-4xl font-bold text-gray-900 mb-2">ComfyUI Comprehensive File Catalog</h1>
+            <h1 class="text-4xl font-bold text-gray-900 mb-2">ComfyUI Light Table</h1>
             <p class="text-lg text-gray-600 mb-4">Complete analysis of all files with diagnostic information</p>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600 max-w-2xl mx-auto">
                 <div class="flex items-center gap-2 justify-center">
@@ -2307,17 +2372,23 @@ def generate_comprehensive_master_catalog_html(analysis_results: List[FileAnalys
                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                 </div>
                 <div class="flex gap-2">
+                    <select id="checkpointFilter" class="px-4 py-2 border border-gray-300 rounded-lg">
+                        <option value="">All Checkpoints</option>
+                        {checkpoint_options}
+                    </select>
+                    <select id="loraFilter" class="px-4 py-2 border border-gray-300 rounded-lg">
+                        <option value="">All LoRAs</option>
+                        {lora_options}
+                    </select>
+                    <select id="nodeFilter" class="px-4 py-2 border border-gray-300 rounded-lg">
+                        <option value="">All Node Types</option>
+                        {node_options}
+                    </select>
                     <select id="typeFilter" class="px-4 py-2 border border-gray-300 rounded-lg">
                         <option value="">All Types</option>
                         <option value="workflow">With Workflows</option>
                         <option value="image_no_workflow">Images (No Workflow)</option>
                         <option value="other_file">Other Files</option>
-                    </select>
-                    <select id="sortSelect" class="px-4 py-2 border border-gray-300 rounded-lg">
-                        <option value="name">Sort by Name</option>
-                        <option value="type">Sort by Type</option>
-                        <option value="size">Sort by Size</option>
-                        <option value="date">Sort by Date</option>
                     </select>
                     <button onclick="resetFilters()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200">
                         Reset
@@ -2342,6 +2413,9 @@ def generate_comprehensive_master_catalog_html(analysis_results: List[FileAnalys
     <script>
         // Search and filter functionality
         const searchInput = document.getElementById('searchInput');
+        const checkpointFilter = document.getElementById('checkpointFilter');
+        const loraFilter = document.getElementById('loraFilter');
+        const nodeFilter = document.getElementById('nodeFilter');
         const typeFilter = document.getElementById('typeFilter');
         const fileGrid = document.getElementById('fileGrid');
         const noResults = document.getElementById('noResults');
@@ -2350,14 +2424,26 @@ def generate_comprehensive_master_catalog_html(analysis_results: List[FileAnalys
         
         function filterCards() {{
             const searchTerm = searchInput.value.toLowerCase();
+            const checkpointFilter_value = checkpointFilter.value;
+            const loraFilter_value = loraFilter.value;
+            const nodeFilter_value = nodeFilter.value;
             const typeFilterValue = typeFilter.value;
             
             // Filter cards (no sorting needed)
             let visibleCards = allCards.filter(card => {{
                 const text = card.textContent.toLowerCase();
                 const matchesSearch = text.includes(searchTerm);
+                
+                const cardCheckpoints = (card.dataset.checkpoints || '').split(',').filter(c => c.trim());
+                const cardLoras = (card.dataset.loras || '').split(',').filter(l => l.trim());
+                const cardNodeTypes = (card.dataset.nodeTypes || '').split(',').filter(n => n.trim());
+                
+                const matchesCheckpoint = !checkpointFilter_value || cardCheckpoints.includes(checkpointFilter_value);
+                const matchesLora = !loraFilter_value || cardLoras.includes(loraFilter_value);
+                const matchesNodeType = !nodeFilter_value || cardNodeTypes.includes(nodeFilter_value);
                 const matchesType = !typeFilterValue || card.dataset.type === typeFilterValue;
-                return matchesSearch && matchesType;
+                
+                return matchesSearch && matchesCheckpoint && matchesLora && matchesNodeType && matchesType;
             }});
             
             // Update display
@@ -2376,12 +2462,18 @@ def generate_comprehensive_master_catalog_html(analysis_results: List[FileAnalys
         
         function resetFilters() {{
             searchInput.value = '';
+            checkpointFilter.value = '';
+            loraFilter.value = '';
+            nodeFilter.value = '';
             typeFilter.value = '';
             filterCards();
         }}
         
         // Event listeners
         searchInput.addEventListener('input', filterCards);
+        checkpointFilter.addEventListener('change', filterCards);
+        loraFilter.addEventListener('change', filterCards);
+        nodeFilter.addEventListener('change', filterCards);
         typeFilter.addEventListener('change', filterCards);
     </script>
     
@@ -2391,10 +2483,10 @@ def generate_comprehensive_master_catalog_html(analysis_results: List[FileAnalys
             <span class="text-xl">💡</span>
             <span class="font-medium">Comfy Light Table</span>
             <span>•</span>
-            <span class="text-sm">Illuminate your ComfyUI workflows</span>
+            <span class="text-sm">Quality of Life Improvements</span>
         </div>
         <div class="mt-2 text-xs">
-            Built on ComfyREST • Open Source Workflow Analysis
+            Built In Venice Beach • Workflow Analysis
         </div>
     </footer>
 </body>
@@ -2488,11 +2580,20 @@ def generate_comprehensive_catalog_card(file_result: FileAnalysisResult, page_pa
                 {error_display}
             </div>'''
     
+    # Add model data attributes for workflow files
+    model_attributes = ""
+    if card_type == 'workflow' and file_result.workflow and file_result.models:
+        checkpoints_json = ','.join(file_result.models.get('checkpoints', []))
+        loras_json = ','.join(file_result.models.get('loras', []))
+        node_types_json = ','.join(file_result.node_types or [])
+        model_attributes = f'''data-checkpoints="{checkpoints_json}" data-loras="{loras_json}" data-node-types="{node_types_json}"'''
+
     card_html = f'''
     <div class="masonry-item {card_class} bg-white rounded-lg shadow-sm border {border_color} overflow-hidden"
          data-type="{card_type}" 
          data-size="{file_info['size_mb']}" 
-         data-date="{file_info['modified']}">
+         data-date="{file_info['modified']}"
+         {model_attributes}>
         {link_start}
             {thumbnail_html}
             
@@ -2577,7 +2678,16 @@ def generate_master_catalog_card(workflow_data: WorkflowImageData, page_path: st
         node_types_display += f" (+{len(summary['node_types']) - 3} more)"
     
     # Extract models and node types for filtering
-    models = extract_models_from_workflow(workflow_data.workflow)
+    # Use original workflow format for model extraction (preserves widget_values)
+    if hasattr(workflow_data, 'original_workflow') and workflow_data.original_workflow:
+        workflow_for_models = workflow_data.original_workflow
+    else:
+        # Fallback: re-extract original format from image
+        workflow_for_models = extract_workflow_from_image(workflow_data.image_path, preserve_original_format=True)
+        if not workflow_for_models:
+            workflow_for_models = workflow_data.workflow
+    
+    models = extract_models_from_workflow(workflow_for_models)
     
     # Separate checkpoints and LoRAs
     checkpoints_json = ','.join(models.get('checkpoints', []))

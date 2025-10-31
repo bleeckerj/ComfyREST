@@ -1,15 +1,17 @@
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.env
-.env.*
-.idea/
-.vscode/
-dist/
-build/
-*.egg-info/
-*.sqlite3
-*.log
-endpoints.json
+# Ignore all generated catalog files in this folder
+# Keep this .gitignore so the folder can be present in git
+*
+!.gitignore
+
+.DS_Store
+# Cache and temp files
+.workflow_cache.json
+*.cache
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Optional: keep README if you have one
+!README.md

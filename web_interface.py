@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="💡 Comfy Light Table",
-    description="Illuminate your ComfyUI workflows with drag-and-drop processing",
+    description="Quality of Life Improvements with drag-and-drop processing",
     version="1.0.0"
 )
 
@@ -385,10 +385,10 @@ def get_interface_html() -> str:
             <span class="text-2xl">💡</span>
             <span class="font-medium">Comfy Light Table</span>
             <span>•</span>
-            <span class="text-sm">Illuminate your ComfyUI workflows</span>
+            <span class="text-sm">Quality of Life Improvements</span>
         </div>
         <div class="mt-2 text-xs">
-            Built on ComfyREST • Open Source Workflow Analysis
+            Built In Venice Beach • Open Source Workflow Analysis
         </div>
     </footer>
 

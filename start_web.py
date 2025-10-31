@@ -3,7 +3,7 @@
 💡 Comfy Light Table Launcher
 
 Checks dependencies and starts the Comfy Light Table web interface server.
-Illuminate your ComfyUI workflows with drag-and-drop processing.
+Quality of Life Improvements with drag-and-drop processing.
 """
 
 import sys
