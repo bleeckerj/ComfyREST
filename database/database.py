@@ -31,9 +31,9 @@ class DatabaseManager:
             database_url: SQLAlchemy database URL. If None, uses SQLite in project directory.
         """
         if database_url is None:
-            # Default to SQLite database in project directory
-            project_root = Path(__file__).parent.parent  # Go up one level to project root
-            db_path = project_root / "comfy_light_table.db"
+            # Default to SQLite database in database directory
+            database_dir = Path(__file__).parent  # Stay in database directory
+            db_path = database_dir / "comfy_light_table.db"
             database_url = f"sqlite:///{db_path}"
         
         self.database_url = database_url

@@ -11,6 +11,27 @@ This project enables you to:
 - **Auto-convert file paths** for cross-platform compatibility (WSL/Windows)
 - **Generate human-readable workflow catalogs** for easy parameter reference
 - **Batch process workflows** with different parameter sets
+- **📚 Browse and manage workflows** through a modern web interface with database backend
+
+## ✨ New: Database-Powered Workflow Catalog
+
+**Comfy Light Table** now includes a comprehensive web interface for workflow management:
+
+- 🌐 **Modern Web UI**: Responsive catalog with masonry grid layout
+- 🔍 **Advanced Search**: Search by name, description, tags, and collections  
+- 🏷️ **Smart Tagging**: Automatic tagging with manual override
+- 📊 **RESTful API**: Complete API for programmatic access
+- 🖼️ **Thumbnail Previews**: Visual workflow identification
+- 📤 **Drag & Drop**: Upload new workflows through web interface
+
+**Quick Start:**
+```bash
+python web_interface.py
+# Visit http://localhost:8080 for uploads
+# Visit http://localhost:8080/catalog for workflow browser
+```
+
+See [CATALOG_FEATURES.md](CATALOG_FEATURES.md) for complete documentation.
 
 ## 📁 Project Structure
 

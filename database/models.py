@@ -31,6 +31,20 @@ file_collections = Table(
     Column('collection_id', String, ForeignKey('collections.id'))
 )
 
+file_clients = Table(
+    'file_clients',
+    Base.metadata,
+    Column('file_id', String, ForeignKey('workflow_files.id')),
+    Column('client_id', String, ForeignKey('clients.id'))
+)
+
+file_projects = Table(
+    'file_projects',
+    Base.metadata,
+    Column('file_id', String, ForeignKey('workflow_files.id')),
+    Column('project_id', String, ForeignKey('projects.id'))
+)
+
 
 class WorkflowFile(Base):
     """Main file record with extracted workflow and metadata."""
@@ -60,6 +74,11 @@ class WorkflowFile(Base):
     is_favorite = Column(Boolean, default=False, index=True)
     is_archived = Column(Boolean, default=False, index=True)
     
+    # Workflow metadata
+    deliverable_type = Column(String)  # "concept", "final", "revision", "presentation", etc.
+    version = Column(String)  # Version number or identifier
+    status = Column(String, index=True)  # "draft", "review", "approved", "delivered", etc.
+    
     # Visual analysis results (populated by AI)
     visual_description = Column(Text)  # AI-generated description
     detected_objects = Column(JSON)    # ["person", "landscape", "building"]
@@ -74,6 +93,8 @@ class WorkflowFile(Base):
     # Relationships
     tags = relationship("Tag", secondary=file_tags, back_populates="files")
     collections = relationship("Collection", secondary=file_collections, back_populates="files")
+    clients = relationship("Client", secondary=file_clients, back_populates="files")
+    projects = relationship("Project", secondary=file_projects, back_populates="files")
     executions = relationship("WorkflowExecution", back_populates="source_file")
 
 
@@ -114,6 +135,59 @@ class Collection(Base):
     
     # Relationships
     files = relationship("WorkflowFile", secondary=file_collections, back_populates="collections")
+
+
+class Client(Base):
+    """Client organizations for workflow management."""
+    __tablename__ = "clients"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, unique=True, index=True)  # Client/Organization name
+    description = Column(Text)
+    contact_email = Column(String)
+    contact_phone = Column(String)
+    address = Column(Text)
+    
+    # Client metadata
+    client_code = Column(String, unique=True, index=True)  # Short code like "ACME", "NIKE"
+    industry = Column(String)  # "Fashion", "Tech", "Healthcare", etc.
+    is_active = Column(Boolean, default=True, index=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    files = relationship("WorkflowFile", secondary=file_clients, back_populates="clients")
+    projects = relationship("Project", back_populates="client")
+
+
+class Project(Base):
+    """Projects for organizing workflows."""
+    __tablename__ = "projects"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, index=True)  # Project name
+    description = Column(Text)
+    project_code = Column(String, unique=True, index=True)  # Unique project identifier
+    
+    # Project details
+    client_id = Column(String, ForeignKey('clients.id'), index=True)  # Primary client
+    start_date = Column(DateTime)
+    deadline = Column(DateTime)
+    budget = Column(Float)
+    status = Column(String, index=True)  # "planning", "active", "review", "completed", "cancelled"
+    priority = Column(String)  # "low", "medium", "high", "urgent"
+    
+    # Project metadata
+    project_type = Column(String)  # "campaign", "product", "event", "brand", etc.
+    deliverable_format = Column(String)  # "digital", "print", "video", "mixed"
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    client = relationship("Client", back_populates="projects")
+    files = relationship("WorkflowFile", secondary=file_projects, back_populates="projects")
 
 
 class WorkflowExecution(Base):
