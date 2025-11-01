@@ -3761,7 +3761,7 @@ async def catalog_page():
                         
                         <!-- Bulk Actions Toggle -->
                         <button id="toggle-bulk-select" class="btn-secondary">
-                            � Select Workflows
+                            SELECT WORKFLOWS
                         </button>
                         
                         <!-- Clear Filters -->
@@ -3858,7 +3858,7 @@ async def catalog_page():
             <div class="confirmation-dialog p-4 flex items-center space-x-4">
                 <span id="selected-count" class="filter-label">0 workflows selected</span>
                 <button onclick="bulkAddToCollection()" class="btn-primary">
-                    📚 Add to Collection
+                    ADD TO COLLECTION
                 </button>
                 <button onclick="clearSelection()" class="btn-secondary">
                     Clear Selection
@@ -4719,6 +4719,242 @@ async def catalog_page():
                     });
                 }
             });
+
+            // Bulk Selection State
+            let bulkSelectMode = false;
+            let selectedWorkflows = new Set();
+
+            // Bulk Selection Functions
+            function toggleBulkSelectMode() {
+                bulkSelectMode = !bulkSelectMode;
+                const button = document.getElementById('toggle-bulk-select');
+                const grid = document.getElementById('workflow-grid');
+                const bulkBar = document.getElementById('bulk-actions-bar');
+                
+                if (bulkSelectMode) {
+                    button.textContent = 'CANCEL SELECTION';
+                    button.classList.remove('btn-secondary');
+                    button.classList.add('btn-danger');
+                    grid.classList.add('bulk-select-mode');
+                } else {
+                    button.textContent = 'SELECT WORKFLOWS';
+                    button.classList.remove('btn-danger');
+                    button.classList.add('btn-secondary');
+                    grid.classList.remove('bulk-select-mode');
+                    clearSelection();
+                    bulkBar.classList.add('hidden');
+                }
+            }
+
+            function toggleWorkflowSelection(workflowId) {
+                if (!bulkSelectMode) return;
+                
+                const checkbox = document.getElementById(`checkbox-${workflowId}`);
+                const card = document.querySelector(`[data-workflow-id="${workflowId}"]`);
+                
+                if (checkbox.checked) {
+                    selectedWorkflows.add(workflowId);
+                    card.classList.add('selected');
+                } else {
+                    selectedWorkflows.delete(workflowId);
+                    card.classList.remove('selected');
+                }
+                
+                updateBulkActionsBar();
+            }
+
+            function clearSelection() {
+                selectedWorkflows.clear();
+                document.querySelectorAll('.workflow-checkbox input[type="checkbox"]').forEach(cb => {
+                    cb.checked = false;
+                });
+                document.querySelectorAll('.workflow-card.selected').forEach(card => {
+                    card.classList.remove('selected');
+                });
+                updateBulkActionsBar();
+            }
+
+            function updateBulkActionsBar() {
+                const bulkBar = document.getElementById('bulk-actions-bar');
+                const countElement = document.getElementById('selected-count');
+                
+                if (selectedWorkflows.size > 0) {
+                    bulkBar.classList.remove('hidden');
+                    countElement.textContent = `${selectedWorkflows.size} workflow${selectedWorkflows.size === 1 ? '' : 's'} selected`;
+                } else {
+                    bulkBar.classList.add('hidden');
+                }
+            }
+
+            function bulkAddToCollection() {
+                if (selectedWorkflows.size === 0) return;
+                openCollectionPicker(Array.from(selectedWorkflows));
+            }
+
+            // Collection Management Functions
+            let collectionPickerWorkflows = [];
+
+            function openCollectionPicker(workflowIds) {
+                collectionPickerWorkflows = workflowIds;
+                document.getElementById('collection-picker-modal').classList.remove('hidden');
+                loadCollectionPickerList();
+            }
+
+            function closeCollectionPicker() {
+                document.getElementById('collection-picker-modal').classList.add('hidden');
+                document.getElementById('quick-collection-name').value = '';
+                collectionPickerWorkflows = [];
+            }
+
+            async function loadCollectionPickerList() {
+                try {
+                    const response = await fetch(`${API_BASE}/collections`);
+                    if (!response.ok) return;
+                    
+                    const data = await response.json();
+                    const collections = data.collections || [];
+                    
+                    const container = document.getElementById('collection-picker-list');
+                    container.innerHTML = '';
+                    
+                    if (collections.length === 0) {
+                        container.innerHTML = '<p class="filter-label text-center py-4">No collections yet. Create one above.</p>';
+                        return;
+                    }
+                    
+                    collections.forEach(collection => {
+                        const item = document.createElement('div');
+                        item.className = 'collection-picker-item';
+                        item.setAttribute('data-collection-id', collection.id);
+                        
+                        item.innerHTML = `
+                            <div class="collection-color-dot" style="background-color: ${collection.color || '#105bd8'}"></div>
+                            <div class="flex-1">
+                                <div class="filter-label">${collection.name}</div>
+                                ${collection.description ? `<div class="text-xs" style="color: var(--nasa-gray);">${collection.description}</div>` : ''}
+                            </div>
+                            <div class="text-xs" style="color: var(--nasa-gray);">${collection.file_count || 0} workflows</div>
+                        `;
+                        
+                        item.addEventListener('click', function() {
+                            item.classList.toggle('selected');
+                        });
+                        
+                        container.appendChild(item);
+                    });
+                    
+                } catch (error) {
+                    console.error('Error loading collections:', error);
+                }
+            }
+
+            async function createQuickCollection() {
+                const name = document.getElementById('quick-collection-name').value.trim();
+                if (!name) return;
+                
+                try {
+                    const response = await fetch(`${API_BASE}/collections`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            name: name,
+                            description: '',
+                            color: '#105bd8'
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        const error = await response.json();
+                        alert(error.detail || 'Failed to create collection');
+                        return;
+                    }
+                    
+                    document.getElementById('quick-collection-name').value = '';
+                    await loadCollectionPickerList();
+                    
+                } catch (error) {
+                    console.error('Error creating collection:', error);
+                    alert('Failed to create collection');
+                }
+            }
+
+            async function saveCollectionAssignments() {
+                const selectedCollectionIds = Array.from(
+                    document.querySelectorAll('.collection-picker-item.selected')
+                ).map(item => item.getAttribute('data-collection-id'));
+                
+                if (collectionPickerWorkflows.length === 0) {
+                    closeCollectionPicker();
+                    return;
+                }
+                
+                try {
+                    // Assign collections to each workflow
+                    for (const workflowId of collectionPickerWorkflows) {
+                        const response = await fetch(`${API_BASE}/workflows/${workflowId}/collections`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ collection_ids: selectedCollectionIds })
+                        });
+                        
+                        if (!response.ok) {
+                            console.error(`Failed to update workflow ${workflowId}`);
+                        }
+                    }
+                    
+                    closeCollectionPicker();
+                    clearSelection();
+                    toggleBulkSelectMode(); // Exit bulk mode
+                    
+                    // Reload workflows to show updated collections
+                    resetAndReload();
+                    
+                    alert('Collections updated successfully!');
+                    
+                } catch (error) {
+                    console.error('Error saving collection assignments:', error);
+                    alert('Failed to update collections');
+                }
+            }
+
+            // Collections Management Functions
+            async function loadCollections() {
+                try {
+                    const response = await fetch(`${API_BASE}/collections`);
+                    if (!response.ok) return;
+                    
+                    const data = await response.json();
+                    allCollections = data.collections || [];
+                    
+                    // Populate custom collection filter dropdown
+                    const collectionMenu = document.getElementById('collection-filter-menu');
+                    if (collectionMenu) {
+                        // Clear existing options (except "All Collections")
+                        const allOption = collectionMenu.querySelector('[data-value=""]');
+                        collectionMenu.innerHTML = '';
+                        if (allOption) {
+                            collectionMenu.appendChild(allOption);
+                        } else {
+                            addDropdownOption('collection-filter-menu', '', 'All Collections', true);
+                        }
+                        
+                        // Add collection options
+                        allCollections.forEach(collection => {
+                            addDropdownOption('collection-filter-menu', collection.name, collection.name.toUpperCase());
+                        });
+                    }
+                    
+                } catch (error) {
+                    console.error('Error loading collections:', error);
+                }
+            }
+
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
         </script>
     </body>
     </html>
@@ -5556,365 +5792,6 @@ def get_interface_html() -> str:
                 });
             }
         });
-
-        // Bulk Selection State
-        let bulkSelectMode = false;
-        let selectedWorkflows = new Set();
-
-        // Bulk Selection Functions
-        function toggleBulkSelectMode() {
-            bulkSelectMode = !bulkSelectMode;
-            const button = document.getElementById('toggle-bulk-select');
-            const grid = document.getElementById('workflow-grid');
-            const bulkBar = document.getElementById('bulk-actions-bar');
-            
-            if (bulkSelectMode) {
-                button.textContent = '❌ Cancel Selection';
-                button.classList.remove('btn-secondary');
-                button.classList.add('btn-danger');
-                grid.classList.add('bulk-select-mode');
-            } else {
-                button.textContent = '📋 Select Workflows';
-                button.classList.remove('btn-danger');
-                button.classList.add('btn-secondary');
-                grid.classList.remove('bulk-select-mode');
-                clearSelection();
-                bulkBar.classList.add('hidden');
-            }
-        }
-
-        function toggleWorkflowSelection(workflowId) {
-            if (!bulkSelectMode) return;
-            
-            const checkbox = document.getElementById(`checkbox-${workflowId}`);
-            const card = document.querySelector(`[data-workflow-id="${workflowId}"]`);
-            
-            if (checkbox.checked) {
-                selectedWorkflows.add(workflowId);
-                card.classList.add('selected');
-            } else {
-                selectedWorkflows.delete(workflowId);
-                card.classList.remove('selected');
-            }
-            
-            updateBulkActionsBar();
-        }
-
-        function clearSelection() {
-            selectedWorkflows.clear();
-            document.querySelectorAll('.workflow-checkbox input[type="checkbox"]').forEach(cb => {
-                cb.checked = false;
-            });
-            document.querySelectorAll('.workflow-card.selected').forEach(card => {
-                card.classList.remove('selected');
-            });
-            updateBulkActionsBar();
-        }
-
-        function updateBulkActionsBar() {
-            const bulkBar = document.getElementById('bulk-actions-bar');
-            const countElement = document.getElementById('selected-count');
-            
-            if (selectedWorkflows.size > 0) {
-                bulkBar.classList.remove('hidden');
-                countElement.textContent = `${selectedWorkflows.size} workflow${selectedWorkflows.size === 1 ? '' : 's'} selected`;
-            } else {
-                bulkBar.classList.add('hidden');
-            }
-        }
-
-        function bulkAddToCollection() {
-            if (selectedWorkflows.size === 0) return;
-            openCollectionPicker(Array.from(selectedWorkflows));
-        }
-
-        // Collection Management Functions
-        let collectionPickerWorkflows = [];
-
-        function openCollectionPicker(workflowIds) {
-            collectionPickerWorkflows = workflowIds;
-            document.getElementById('collection-picker-modal').classList.remove('hidden');
-            loadCollectionPickerList();
-        }
-
-        function closeCollectionPicker() {
-            document.getElementById('collection-picker-modal').classList.add('hidden');
-            document.getElementById('quick-collection-name').value = '';
-            collectionPickerWorkflows = [];
-        }
-
-        async function loadCollectionPickerList() {
-            try {
-                const response = await fetch(`${API_BASE}/collections`);
-                if (!response.ok) return;
-                
-                const data = await response.json();
-                const collections = data.collections || [];
-                
-                const container = document.getElementById('collection-picker-list');
-                container.innerHTML = '';
-                
-                if (collections.length === 0) {
-                    container.innerHTML = '<p class="filter-label text-center py-4">No collections yet. Create one above.</p>';
-                    return;
-                }
-                
-                collections.forEach(collection => {
-                    const item = document.createElement('div');
-                    item.className = 'collection-picker-item';
-                    item.setAttribute('data-collection-id', collection.id);
-                    
-                    item.innerHTML = `
-                        <div class="collection-color-dot" style="background-color: ${collection.color || '#105bd8'}"></div>
-                        <div class="flex-1">
-                            <div class="filter-label">${collection.name}</div>
-                            ${collection.description ? `<div class="text-xs" style="color: var(--nasa-gray);">${collection.description}</div>` : ''}
-                        </div>
-                        <div class="text-xs" style="color: var(--nasa-gray);">${collection.file_count || 0} workflows</div>
-                    `;
-                    
-                    item.addEventListener('click', function() {
-                        item.classList.toggle('selected');
-                    });
-                    
-                    container.appendChild(item);
-                });
-                
-            } catch (error) {
-                console.error('Error loading collections:', error);
-            }
-        }
-
-        async function createQuickCollection() {
-            const name = document.getElementById('quick-collection-name').value.trim();
-            if (!name) return;
-            
-            try {
-                const response = await fetch(`${API_BASE}/collections`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        name: name,
-                        description: '',
-                        color: '#105bd8'
-                    })
-                });
-                
-                if (!response.ok) {
-                    const error = await response.json();
-                    alert(error.detail || 'Failed to create collection');
-                    return;
-                }
-                
-                document.getElementById('quick-collection-name').value = '';
-                await loadCollectionPickerList();
-                
-            } catch (error) {
-                console.error('Error creating collection:', error);
-                alert('Failed to create collection');
-            }
-        }
-
-        async function saveCollectionAssignments() {
-            const selectedCollectionIds = Array.from(
-                document.querySelectorAll('.collection-picker-item.selected')
-            ).map(item => item.getAttribute('data-collection-id'));
-            
-            if (collectionPickerWorkflows.length === 0) {
-                closeCollectionPicker();
-                return;
-            }
-            
-            try {
-                // Assign collections to each workflow
-                for (const workflowId of collectionPickerWorkflows) {
-                    const response = await fetch(`${API_BASE}/workflows/${workflowId}/collections`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ collection_ids: selectedCollectionIds })
-                    });
-                    
-                    if (!response.ok) {
-                        console.error(`Failed to update workflow ${workflowId}`);
-                    }
-                }
-                
-                closeCollectionPicker();
-                clearSelection();
-                toggleBulkSelectMode(); // Exit bulk mode
-                
-                // Reload workflows to show updated collections
-                resetAndReload();
-                
-                alert('Collections updated successfully!');
-                
-            } catch (error) {
-                console.error('Error saving collection assignments:', error);
-                alert('Failed to update collections');
-            }
-        }
-
-        // Collections Management Functions
-        async function loadCollections() {
-            try {
-                const response = await fetch(`${API_BASE}/collections`);
-                if (!response.ok) return;
-                
-                const data = await response.json();
-                allCollections = data.collections || [];
-                
-                // Populate custom collection filter dropdown
-                const collectionMenu = document.getElementById('collection-filter-menu');
-                if (collectionMenu) {
-                    // Clear existing options (except "All Collections")
-                    const allOption = collectionMenu.querySelector('[data-value=""]');
-                    collectionMenu.innerHTML = '';
-                    if (allOption) {
-                        collectionMenu.appendChild(allOption);
-                    } else {
-                        addDropdownOption('collection-filter-menu', '', 'All Collections', true);
-                    }
-                    
-                    // Add collection options
-                    allCollections.forEach(collection => {
-                        addDropdownOption('collection-filter-menu', collection.name, collection.name.toUpperCase());
-                    });
-                }
-                
-            } catch (error) {
-                console.error('Error loading collections:', error);
-            }
-        }
-
-        function openCollectionsModal() {
-            document.getElementById('collections-modal').classList.remove('hidden');
-            loadCollectionsForModal();
-        }
-
-        function closeCollectionsModal() {
-            document.getElementById('collections-modal').classList.add('hidden');
-            // Reset form
-            document.getElementById('new-collection-name').value = '';
-            document.getElementById('new-collection-description').value = '';
-            document.getElementById('new-collection-color').value = '#105bd8';
-        }
-
-        async function loadCollectionsForModal() {
-            try {
-                const response = await fetch(`${API_BASE}/collections`);
-                if (!response.ok) return;
-                
-                const data = await response.json();
-                const collections = data.collections || [];
-                
-                const container = document.getElementById('collections-list');
-                container.innerHTML = '';
-                
-                if (collections.length === 0) {
-                    container.innerHTML = '<p class="text-gray-500 text-center py-4">No collections yet. Create your first collection above.</p>';
-                    return;
-                }
-                
-                collections.forEach(collection => {
-                    const item = document.createElement('div');
-                    item.className = 'flex items-center justify-between p-3 border border-gray-200 rounded';
-                    item.innerHTML = `
-                        <div class="flex items-center space-x-3">
-                            <div class="w-4 h-4 rounded" style="background-color: ${collection.color || '#105bd8'}"></div>
-                            <div>
-                                <div class="font-medium">${escapeHtml(collection.name)}</div>
-                                <div class="text-sm text-gray-500">${collection.file_count || 0} workflows</div>
-                                ${collection.description ? `<div class="text-xs text-gray-400">${escapeHtml(collection.description)}</div>` : ''}
-                            </div>
-                        </div>
-                        <button onclick="deleteCollection('${collection.id}', '${escapeHtml(collection.name)}')" 
-                                class="btn-danger text-xs">
-                            Delete
-                        </button>
-                    `;
-                    container.appendChild(item);
-                });
-                
-            } catch (error) {
-                console.error('Error loading collections for modal:', error);
-            }
-        }
-
-        async function createCollection() {
-            const name = document.getElementById('new-collection-name').value.trim();
-            const description = document.getElementById('new-collection-description').value.trim();
-            const color = document.getElementById('new-collection-color').value;
-            
-            if (!name) {
-                alert('Please enter a collection name');
-                return;
-            }
-            
-            try {
-                const response = await fetch(`${API_BASE}/collections`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ name, description, color })
-                });
-                
-                if (!response.ok) {
-                    const error = await response.json();
-                    alert(error.detail || 'Failed to create collection');
-                    return;
-                }
-                
-                // Reset form
-                document.getElementById('new-collection-name').value = '';
-                document.getElementById('new-collection-description').value = '';
-                document.getElementById('new-collection-color').value = '#105bd8';
-                
-                // Reload collections
-                await loadCollections();
-                await loadCollectionsForModal();
-                
-                alert('Collection created successfully!');
-                
-            } catch (error) {
-                console.error('Error creating collection:', error);
-                alert('Failed to create collection');
-            }
-        }
-
-        async function deleteCollection(collectionId, collectionName) {
-            if (!confirm(`Are you sure you want to delete the collection "${collectionName}"? This will remove it from all workflows.`)) {
-                return;
-            }
-            
-            try {
-                const response = await fetch(`${API_BASE}/collections/${collectionId}`, {
-                    method: 'DELETE'
-                });
-                
-                if (!response.ok) {
-                    const error = await response.json();
-                    alert(error.detail || 'Failed to delete collection');
-                    return;
-                }
-                
-                // Reload collections
-                await loadCollections();
-                await loadCollectionsForModal();
-                
-                alert('Collection deleted successfully!');
-                
-            } catch (error) {
-                console.error('Error deleting collection:', error);
-                alert('Failed to delete collection');
-            }
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
         
     </script>
 </body>
