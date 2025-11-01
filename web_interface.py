@@ -1734,7 +1734,7 @@ async def get_collections():
 
 @app.get("/catalog", response_class=HTMLResponse)
 async def catalog_page():
-    """Serve the database-powered workflow catalog page."""
+    """Serve the enhanced database-powered workflow catalog page with comprehensive tag management."""
     if not DATABASE_AVAILABLE:
         return HTMLResponse("""
         <html>
@@ -1755,7 +1755,7 @@ async def catalog_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>📚 Comfy Light Table - Workflow Catalog</title>
+        <title>ComfyUI Workflow Light Table</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <style>
             .workflow-grid {
@@ -1765,7 +1765,6 @@ async def catalog_page():
                 padding: 0;
             }
             .workflow-card {
-                break-inside: avoid;
                 transition: all 0.3s ease;
                 width: 100%;
             }
@@ -1782,19 +1781,10 @@ async def catalog_page():
                 font-size: 0.75rem;
                 font-weight: 500;
                 color: #374151;
-                cursor: pointer;
-                transition: all 0.2s ease;
             }
-            .tag:hover {
-                background: #d1d5db;
-            }
-            .tag.active {
-                background: #3b82f6;
-                color: white;
-            }
-            .loading-skeleton {
-                animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-            }
+            .checkpoint-tag { background: #dbeafe; color: #1e40af; }
+            .lora-tag { background: #fef3c7; color: #92400e; }
+            .node-tag { background: #f3e8ff; color: #7c3aed; }
             .thumbnail {
                 width: 100%;
                 height: 200px;
@@ -1820,12 +1810,12 @@ async def catalog_page():
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between items-center py-4">
                     <div class="flex items-center space-x-4">
-                        <h1 class="text-2xl font-bold text-gray-900">📚 Workflow Catalog</h1>
+                        <h1 class="text-3xl font-bold text-gray-900">� ComfyUI Workflow Light Table</h1>
                         <span id="workflow-count" class="bg-blue-100 text-blue-800 text-sm font-medium px-2.5 py-0.5 rounded">
                             Loading...
                         </span>
                     </div>
-                    <div class="flex space-x-4">
+                    <div class="flex items-center space-x-4">
                         <a href="/" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors">
                             📤 Upload Workflows
                         </a>
@@ -1841,19 +1831,27 @@ async def catalog_page():
                                    class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
                         </div>
                         
-                        <!-- Tag Filter -->
+                        <!-- Checkpoint Filter -->
                         <div class="flex items-center space-x-2">
-                            <label class="text-sm font-medium text-gray-700">Tags:</label>
-                            <select id="tag-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                <option value="">All Tags</option>
+                            <label class="text-sm font-medium text-gray-700">Checkpoint:</label>
+                            <select id="checkpoint-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">All Checkpoints</option>
                             </select>
                         </div>
                         
-                        <!-- Collection Filter -->
+                        <!-- LoRA Filter -->
                         <div class="flex items-center space-x-2">
-                            <label class="text-sm font-medium text-gray-700">Collections:</label>
-                            <select id="collection-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                                <option value="">All Collections</option>
+                            <label class="text-sm font-medium text-gray-700">LoRA:</label>
+                            <select id="lora-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">All LoRAs</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Node Type Filter -->
+                        <div class="flex items-center space-x-2">
+                            <label class="text-sm font-medium text-gray-700">Node Type:</label>
+                            <select id="node-type-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="">All Node Types</option>
                             </select>
                         </div>
                         
@@ -1908,17 +1906,24 @@ async def catalog_page():
         </main>
 
         <script>
+            // Configuration
+            const API_BASE = '/api';
+            
+            // State management
             let currentWorkflows = [];
-            let allTags = [];
-            let allCollections = [];
+            let allCheckpoints = [];
+            let allLoras = [];
+            let allNodeTypes = [];
             let currentFilters = {
                 search: '',
-                tag: '',
-                collection: '',
+                checkpoint: '',
+                lora: '',
+                nodeType: '',
                 offset: 0,
                 limit: 50
             };
             let hasMore = true;
+
             // Initialize page
             document.addEventListener('DOMContentLoaded', function() {
                 loadFilters();
@@ -1938,25 +1943,32 @@ async def catalog_page():
                 });
 
                 // Filter dropdowns
-                document.getElementById('tag-filter').addEventListener('change', function(e) {
-                    currentFilters.tag = e.target.value;
+                document.getElementById('checkpoint-filter').addEventListener('change', function(e) {
+                    currentFilters.checkpoint = e.target.value;
                     resetAndReload();
                 });
 
-                document.getElementById('collection-filter').addEventListener('change', function(e) {
-                    currentFilters.collection = e.target.value;
+                document.getElementById('lora-filter').addEventListener('change', function(e) {
+                    currentFilters.lora = e.target.value;
+                    resetAndReload();
+                });
+
+                document.getElementById('node-type-filter').addEventListener('change', function(e) {
+                    currentFilters.nodeType = e.target.value;
                     resetAndReload();
                 });
 
                 // Clear filters
                 document.getElementById('clear-filters').addEventListener('click', function() {
                     document.getElementById('search-input').value = '';
-                    document.getElementById('tag-filter').value = '';
-                    document.getElementById('collection-filter').value = '';
+                    document.getElementById('checkpoint-filter').value = '';
+                    document.getElementById('lora-filter').value = '';
+                    document.getElementById('node-type-filter').value = '';
                     currentFilters = {
                         search: '',
-                        tag: '',
-                        collection: '',
+                        checkpoint: '',
+                        lora: '',
+                        nodeType: '',
                         offset: 0,
                         limit: 50
                     };
@@ -1972,32 +1984,64 @@ async def catalog_page():
 
             async function loadFilters() {
                 try {
-                    // Load tags
-                    const tagsResponse = await fetch('/api/tags');
-                    const tagsData = await tagsResponse.json();
-                    allTags = tagsData.tags;
+                    const response = await fetch(`${API_BASE}/workflows?limit=1000`);
+                    if (!response.ok) return;
                     
-                    const tagSelect = document.getElementById('tag-filter');
-                    tagSelect.innerHTML = '<option value="">All Tags</option>';
-                    allTags.forEach(tag => {
-                        const option = document.createElement('option');
-                        option.value = tag.name;
-                        option.textContent = `${tag.name} (${tag.workflow_count})`;
-                        tagSelect.appendChild(option);
+                    const data = await response.json();
+                    const workflows = data.workflows;
+
+                    // Extract unique values
+                    const checkpointSet = new Set();
+                    const loraSet = new Set();
+                    const nodeTypeSet = new Set();
+
+                    workflows.forEach(workflow => {
+                        workflow.tags.forEach(tag => {
+                            if (tag.startsWith('checkpoint:')) {
+                                checkpointSet.add(tag.substring(11));
+                            } else if (tag.startsWith('lora:')) {
+                                loraSet.add(tag.substring(5));
+                            }
+                        });
+                        
+                        if (workflow.node_types) {
+                            workflow.node_types.forEach(nodeType => {
+                                nodeTypeSet.add(nodeType);
+                            });
+                        }
                     });
 
-                    // Load collections
-                    const collectionsResponse = await fetch('/api/collections');
-                    const collectionsData = await collectionsResponse.json();
-                    allCollections = collectionsData.collections;
-                    
-                    const collectionSelect = document.getElementById('collection-filter');
-                    collectionSelect.innerHTML = '<option value="">All Collections</option>';
-                    allCollections.forEach(collection => {
+                    // Populate checkpoints
+                    allCheckpoints = Array.from(checkpointSet).sort();
+                    const checkpointSelect = document.getElementById('checkpoint-filter');
+                    checkpointSelect.innerHTML = '<option value="">All Checkpoints</option>';
+                    allCheckpoints.forEach(checkpoint => {
                         const option = document.createElement('option');
-                        option.value = collection.name;
-                        option.textContent = `${collection.name} (${collection.workflow_count})`;
-                        collectionSelect.appendChild(option);
+                        option.value = checkpoint;
+                        option.textContent = checkpoint;
+                        checkpointSelect.appendChild(option);
+                    });
+
+                    // Populate LoRAs
+                    allLoras = Array.from(loraSet).sort();
+                    const loraSelect = document.getElementById('lora-filter');
+                    loraSelect.innerHTML = '<option value="">All LoRAs</option>';
+                    allLoras.forEach(lora => {
+                        const option = document.createElement('option');
+                        option.value = lora;
+                        option.textContent = lora;
+                        loraSelect.appendChild(option);
+                    });
+
+                    // Populate node types
+                    allNodeTypes = Array.from(nodeTypeSet).sort();
+                    const nodeTypeSelect = document.getElementById('node-type-filter');
+                    nodeTypeSelect.innerHTML = '<option value="">All Node Types</option>';
+                    allNodeTypes.forEach(nodeType => {
+                        const option = document.createElement('option');
+                        option.value = nodeType;
+                        option.textContent = nodeType;
+                        nodeTypeSelect.appendChild(option);
                     });
 
                 } catch (error) {
@@ -2012,14 +2056,12 @@ async def catalog_page():
                     // Build query parameters
                     const params = new URLSearchParams();
                     if (currentFilters.search) params.append('search', currentFilters.search);
-                    if (currentFilters.tag) params.append('tag', currentFilters.tag);
-                    if (currentFilters.collection) params.append('collection', currentFilters.collection);
                     params.append('limit', currentFilters.limit);
                     params.append('offset', currentFilters.offset);
 
                     console.log('Loading workflows with params:', params.toString());
                     
-                    const response = await fetch(`/api/workflows?${params}`);
+                    const response = await fetch(`${API_BASE}/workflows?${params}`);
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                     }
@@ -2027,16 +2069,35 @@ async def catalog_page():
                     const data = await response.json();
                     console.log('Received workflows data:', data);
                     
+                    let workflows = data.workflows;
+
+                    // Apply client-side filters
+                    if (currentFilters.checkpoint) {
+                        workflows = workflows.filter(w => 
+                            w.tags.some(tag => tag === `checkpoint:${currentFilters.checkpoint}`)
+                        );
+                    }
+                    if (currentFilters.lora) {
+                        workflows = workflows.filter(w => 
+                            w.tags.some(tag => tag === `lora:${currentFilters.lora}`)
+                        );
+                    }
+                    if (currentFilters.nodeType) {
+                        workflows = workflows.filter(w => 
+                            w.node_types && w.node_types.includes(currentFilters.nodeType)
+                        );
+                    }
+                    
                     if (append) {
-                        currentWorkflows = currentWorkflows.concat(data.workflows);
+                        currentWorkflows = currentWorkflows.concat(workflows);
                     } else {
-                        currentWorkflows = data.workflows;
+                        currentWorkflows = workflows;
                     }
                     
                     hasMore = data.has_more;
                     
                     renderWorkflows(append);
-                    updateWorkflowCount(data.total);
+                    updateWorkflowCount(workflows.length);
                     
                     hideLoading();
                     
@@ -2089,10 +2150,18 @@ async def catalog_page():
                 div.className = 'workflow-card bg-white rounded-lg shadow-md overflow-hidden';
                 
                 const createdAt = workflow.created_at ? new Date(workflow.created_at).toLocaleDateString() : 'Unknown';
-                const tags = workflow.tags.map(tag => 
+                
+                // Separate tags by type
+                const checkpointTags = workflow.tags.filter(tag => tag.startsWith('checkpoint:')).map(tag => tag.substring(11));
+                const loraTags = workflow.tags.filter(tag => tag.startsWith('lora:')).map(tag => tag.substring(5));
+                const otherTags = workflow.tags.filter(tag => !tag.startsWith('checkpoint:') && !tag.startsWith('lora:'));
+                
+                const checkpointTagsHtml = checkpointTags.map(tag => `<span class="tag checkpoint-tag">📁 ${tag}</span>`).join('');
+                const loraTagsHtml = loraTags.map(tag => `<span class="tag lora-tag">🎯 ${tag}</span>`).join('');
+                const otherTagsHtml = otherTags.map(tag => 
                     `<span class="tag-item-wrapper-catalog relative inline-block">
-                        <span class="tag tag-editable bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs flex items-center gap-1 group">
-                            <span class="tag-text">${tag}</span>
+                        <span class="tag tag-editable bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs flex items-center gap-1 group" style="display: inline-flex;">
+                            <span class="tag-text">🏷️ ${tag}</span>
                             <button onclick="showDeleteConfirmCatalog(this, '${tag}', '${workflow.id}')" class="text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity ml-1" title="Delete tag">×</button>
                         </span>
                         <div class="delete-confirm hidden absolute top-full left-0 mt-1 bg-white border border-red-300 rounded-md shadow-lg p-2 z-50 whitespace-nowrap">
@@ -2104,12 +2173,11 @@ async def catalog_page():
                         </div>
                     </span>`
                 ).join(' ');
-                const collections = workflow.collections.map(collection => `<span class="tag">${collection}</span>`).join('');
                 
                 div.innerHTML = `
                     ${workflow.has_image ? 
                         `<div class="thumbnail-container">
-                            <img src="${workflow.thumbnail_path}" alt="${workflow.name}" class="thumbnail" 
+                            <img src="${API_BASE}/workflows/${workflow.id}/thumbnail" alt="${workflow.name}" class="thumbnail" 
                                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                             <div class="no-thumbnail" style="display: none;">🖼️</div>
                          </div>`
@@ -2129,13 +2197,16 @@ async def catalog_page():
                             <span>📅 ${createdAt}</span>
                         </div>
                         
+                        ${checkpointTagsHtml ? `<div class="mb-2">${checkpointTagsHtml}</div>` : ''}
+                        ${loraTagsHtml ? `<div class="mb-2">${loraTagsHtml}</div>` : ''}
+                        
                         <div class="mb-3">
                             <div class="flex items-center justify-between mb-1">
                                 <span class="text-xs font-medium text-gray-600">Tags:</span>
                                 <button onclick="showAddTagForm('${workflow.id}')" class="text-green-600 hover:text-green-800 text-xs" title="Add tag">+ Add</button>
                             </div>
                             <div id="tags-container-${workflow.id}" class="flex flex-wrap gap-1 mb-1">
-                                ${tags || '<span class="text-xs text-gray-400">No tags</span>'}
+                                ${otherTagsHtml || '<span class="text-xs text-gray-400">No tags</span>'}
                             </div>
                             <div id="add-tag-form-${workflow.id}" class="hidden">
                                 <input type="text" id="new-tag-input-${workflow.id}" placeholder="Enter tag..." class="px-2 py-1 text-xs border border-gray-300 rounded mr-1 w-full mb-1">
@@ -2145,12 +2216,11 @@ async def catalog_page():
                                 </div>
                             </div>
                         </div>
-                        ${collections ? `<div class="mb-3"><span class="text-xs font-medium text-gray-600">Collections:</span><br>${collections}</div>` : ''}
                         
                         <div class="flex space-x-2">
                             <button onclick="viewWorkflow('${workflow.id}')" 
                                     class="flex-1 bg-blue-500 text-white px-3 py-2 rounded text-sm hover:bg-blue-600 transition-colors">
-                                👁️ View
+                                👁️ View Details
                             </button>
                             <button onclick="downloadWorkflow('${workflow.id}', '${workflow.name || workflow.filename}')" 
                                     class="flex-1 bg-gray-500 text-white px-3 py-2 rounded text-sm hover:bg-gray-600 transition-colors">
@@ -2163,115 +2233,12 @@ async def catalog_page():
                 return div;
             }
 
-            async function viewWorkflow(workflowId) {
-                try {
-                    const response = await fetch(`/api/workflows/${workflowId}`);
-                    const workflow = await response.json();
-                    
-                    // Create a modal or new window to show workflow details
-                    const modal = document.createElement('div');
-                    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4';
-                    modal.onclick = (e) => {
-                        if (e.target === modal) modal.remove();
-                    };
-                    
-                    modal.innerHTML = `
-                        <div class="bg-white rounded-lg max-w-4xl max-h-[90vh] overflow-auto">
-                            <div class="p-6">
-                                <div class="flex justify-between items-start mb-4">
-                                    <h2 class="text-2xl font-bold text-gray-900">${workflow.name}</h2>
-                                    <button onclick="this.closest('.fixed').remove()" class="text-gray-500 hover:text-gray-700 text-2xl">×</button>
-                                </div>
-                                
-                                ${workflow.description ? `<p class="text-gray-600 mb-4">${workflow.description}</p>` : ''}
-                                
-                                <div class="grid grid-cols-2 gap-4 mb-4 text-sm">
-                                    <div><strong>Filename:</strong> ${workflow.filename}</div>
-                                    <div><strong>Nodes:</strong> ${workflow.node_count || 0}</div>
-                                    <div><strong>Created:</strong> ${workflow.created_at ? new Date(workflow.created_at).toLocaleString() : 'Unknown'}</div>
-                                    <div><strong>File Size:</strong> ${workflow.file_size ? Math.round(workflow.file_size / 1024) + ' KB' : 'Unknown'}</div>
-                                </div>
-                                
-                                ${workflow.tags.length > 0 ? `
-                                    <div class="mb-4">
-                                        <strong class="block mb-2">Tags:</strong>
-                                        ${workflow.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
-                                    </div>
-                                ` : ''}
-                                
-                                ${workflow.collections.length > 0 ? `
-                                    <div class="mb-4">
-                                        <strong class="block mb-2">Collections:</strong>
-                                        ${workflow.collections.map(collection => `<span class="tag">${collection}</span>`).join('')}
-                                    </div>
-                                ` : ''}
-                                
-                                <div class="flex space-x-2">
-                                    <button onclick="downloadWorkflow(${workflow.id}, '${workflow.name}')" 
-                                            class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
-                                        📥 Download JSON
-                                    </button>
-                                    ${workflow.has_image ? `
-                                        <button onclick="window.open('/api/workflows/${workflow.id}/thumbnail', '_blank')" 
-                                                class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">
-                                            🖼️ View Image
-                                        </button>
-                                    ` : ''}
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                    
-                    document.body.appendChild(modal);
-                    
-                } catch (error) {
-                    console.error('Error viewing workflow:', error);
-                    alert('Error loading workflow details');
-                }
-            }
-
-            async function downloadWorkflow(workflowId, workflowName) {
-                try {
-                    const response = await fetch(`/api/workflows/${workflowId}`);
-                    const data = await response.json();
-                    
-                    if (data.workflow) {
-                        const blob = new Blob([JSON.stringify(data.workflow, null, 2)], {
-                            type: 'application/json'
-                        });
-                        
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `${workflowName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.json`;
-                        a.click();
-                        URL.revokeObjectURL(url);
-                    } else {
-                        alert('Workflow JSON not available');
-                    }
-                    
-                } catch (error) {
-                    console.error('Error downloading workflow:', error);
-                    alert('Error downloading workflow');
-                }
-            }
-
             function updateWorkflowCount(total) {
                 document.getElementById('workflow-count').textContent = `${total} workflows`;
             }
 
             function showLoading(show = true) {
-                const loading = document.getElementById('loading');
-                const error = document.getElementById('error');
-                const empty = document.getElementById('empty');
-                const grid = document.getElementById('workflow-grid');
-                
-                if (show) {
-                    loading.classList.remove('hidden');
-                    error.classList.add('hidden');
-                    empty.classList.add('hidden');
-                    grid.classList.add('hidden');
-                }
+                document.getElementById('loading').classList.toggle('hidden', !show);
             }
 
             function hideLoading() {
@@ -2282,16 +2249,171 @@ async def catalog_page():
                 hideLoading();
                 document.getElementById('error-message').textContent = message;
                 document.getElementById('error').classList.remove('hidden');
-                document.getElementById('empty').classList.add('hidden');
                 document.getElementById('workflow-grid').classList.add('hidden');
             }
 
             function showEmpty() {
-                hideLoading();
                 document.getElementById('empty').classList.remove('hidden');
-                document.getElementById('error').classList.add('hidden');
                 document.getElementById('workflow-grid').classList.add('hidden');
             }
+
+            function viewWorkflow(workflowId) {
+                // Open detailed HTML page in new tab - much richer than modal
+                window.open(`/workflows/${workflowId}`, '_blank');
+            }
+
+            function downloadWorkflow(workflowId, filename) {
+                // Download workflow JSON
+                const link = document.createElement('a');
+                link.href = `${API_BASE}/workflows/${workflowId}/download`;
+                link.download = `${filename}_workflow.json`;
+                link.click();
+            }
+
+            // Tag management functions
+            function showAddTagForm(workflowId) {
+                const form = document.getElementById(`add-tag-form-${workflowId}`);
+                const input = document.getElementById(`new-tag-input-${workflowId}`);
+                form.classList.remove('hidden');
+                input.focus();
+            }
+
+            function cancelAddTagCatalog(workflowId) {
+                const form = document.getElementById(`add-tag-form-${workflowId}`);
+                const input = document.getElementById(`new-tag-input-${workflowId}`);
+                form.classList.add('hidden');
+                input.value = '';
+            }
+
+            async function saveNewTagCatalog(workflowId) {
+                const input = document.getElementById(`new-tag-input-${workflowId}`);
+                const tagValue = input.value.trim();
+                
+                if (!tagValue) return;
+                
+                try {
+                    const response = await fetch(`${API_BASE}/workflows/${workflowId}/tags`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tag: tagValue })
+                    });
+                    
+                    if (response.ok) {
+                        addTagToUICatalog(workflowId, tagValue);
+                        cancelAddTagCatalog(workflowId);
+                        showToast('Tag added successfully', 'success');
+                    } else {
+                        alert('Failed to add tag');
+                    }
+                } catch (error) {
+                    console.error('Error adding tag:', error);
+                    alert('Error adding tag');
+                }
+            }
+
+            function showDeleteConfirmCatalog(button, tagValue, workflowId) {
+                // Hide any other open confirmations
+                document.querySelectorAll('.delete-confirm').forEach(confirm => {
+                    confirm.classList.add('hidden');
+                });
+                
+                // Show confirmation for this tag
+                const tagWrapper = button.closest('.tag-item-wrapper-catalog');
+                const confirmDiv = tagWrapper.querySelector('.delete-confirm');
+                confirmDiv.classList.remove('hidden');
+            }
+
+            function cancelDeleteCatalog(button) {
+                const confirmDiv = button.closest('.delete-confirm');
+                confirmDiv.classList.add('hidden');
+            }
+
+            async function confirmDeleteCatalog(button, tagValue, workflowId) {
+                try {
+                    const response = await fetch(`${API_BASE}/workflows/${workflowId}/tags`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tag: tagValue })
+                    });
+                    
+                    if (response.ok) {
+                        removeTagFromUICatalog(workflowId, tagValue);
+                        showToast('Tag deleted successfully', 'success');
+                    } else {
+                        alert('Failed to delete tag');
+                    }
+                } catch (error) {
+                    console.error('Error deleting tag:', error);
+                    alert('Error deleting tag');
+                }
+            }
+
+            function addTagToUICatalog(workflowId, tagValue) {
+                const container = document.getElementById(`tags-container-${workflowId}`);
+                
+                // Remove "No tags" placeholder if present
+                const noTagsSpan = container.querySelector('.text-gray-400');
+                if (noTagsSpan) {
+                    noTagsSpan.remove();
+                }
+                
+                const tagHtml = `
+                    <span class="tag-item-wrapper-catalog relative inline-block">
+                        <span class="tag tag-editable bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs flex items-center gap-1 group" style="display: inline-flex;">
+                            <span class="tag-text">🏷️ ${tagValue}</span>
+                            <button onclick="showDeleteConfirmCatalog(this, '${tagValue.replace(/'/g, "\\'")}', '${workflowId}')" class="text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity ml-1" title="Delete tag">×</button>
+                        </span>
+                        <div class="delete-confirm hidden absolute top-full left-0 mt-1 bg-white border border-red-300 rounded-md shadow-lg p-2 z-50 whitespace-nowrap">
+                            <div class="text-xs text-gray-700 mb-2">Delete "${tagValue}"?</div>
+                            <div class="flex gap-1">
+                                <button onclick="confirmDeleteCatalog(this, '${tagValue.replace(/'/g, "\\'")}', '${workflowId}')" class="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600">Delete</button>
+                                <button onclick="cancelDeleteCatalog(this)" class="bg-gray-300 text-gray-700 px-2 py-1 rounded text-xs hover:bg-gray-400">Cancel</button>
+                            </div>
+                        </div>
+                    </span>
+                `;
+                container.insertAdjacentHTML('beforeend', tagHtml);
+            }
+
+            function removeTagFromUICatalog(workflowId, tagValue) {
+                const container = document.getElementById(`tags-container-${workflowId}`);
+                const tagWrappers = container.querySelectorAll('.tag-item-wrapper-catalog');
+                
+                tagWrappers.forEach(wrapper => {
+                    const textSpan = wrapper.querySelector('.tag-text');
+                    if (textSpan && textSpan.textContent === `🏷️ ${tagValue}`) {
+                        wrapper.remove();
+                    }
+                });
+                
+                // Add "No tags" placeholder if container is empty
+                if (container.children.length === 0) {
+                    container.innerHTML = '<span class="text-xs text-gray-400">No tags</span>';
+                }
+            }
+
+            function showToast(message, type = 'info') {
+                const toast = document.createElement('div');
+                toast.className = `fixed top-4 right-4 px-4 py-2 rounded-md text-white z-50 ${
+                    type === 'success' ? 'bg-green-500' : 
+                    type === 'error' ? 'bg-red-500' : 'bg-blue-500'
+                }`;
+                toast.textContent = message;
+                document.body.appendChild(toast);
+                
+                setTimeout(() => {
+                    toast.remove();
+                }, 3000);
+            }
+
+            // Hide delete confirmations when clicking outside
+            document.addEventListener('click', function(event) {
+                if (!event.target.closest('.tag-item-wrapper-catalog')) {
+                    document.querySelectorAll('.delete-confirm').forEach(confirm => {
+                        confirm.classList.add('hidden');
+                    });
+                }
+            });
         </script>
     </body>
     </html>
