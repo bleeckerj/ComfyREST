@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-💡 Comfy Light Table
+Comfy Light Table
 
 A web-based drag-and-drop interface for illuminating ComfyUI workflows from images and JSON files.
 Features real-time processing, interactive visualization, and batch operations.
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +34,10 @@ from workflow_catalog import (
     ui_to_api_format
 )
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Import database functionality
 try:
     from database.database import get_database_manager, WorkflowFileManager
@@ -43,17 +47,19 @@ except ImportError as e:
     logger.warning(f"Database not available: {e}")
     DATABASE_AVAILABLE = False
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
     """Generate detailed HTML page for a workflow with rich editing features."""
     import html as html_escape
     
-    # Build tags
+    # Build tags from proper relationship + legacy JSON field
     tags = []
-    if workflow.style_tags:
+    
+    # Get tags from proper Tag relationship (preferred)
+    if hasattr(workflow, 'tags') and workflow.tags:
+        tags.extend([tag.name for tag in workflow.tags])
+    
+    # Also check legacy style_tags JSON field for backwards compatibility
+    elif workflow.style_tags:  # Only use if no proper tags exist
         try:
             if isinstance(workflow.style_tags, str):
                 import json
@@ -64,11 +70,15 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
         except Exception:
             pass
     
-    # Add checkpoint and lora tags
+    # Add checkpoint and lora tags (but only if not already present)
     for checkpoint in checkpoints:
-        tags.append(f"checkpoint:{checkpoint}")
+        checkpoint_tag = f"checkpoint:{checkpoint}"
+        if checkpoint_tag not in tags:
+            tags.append(checkpoint_tag)
     for lora in loras:
-        tags.append(f"lora:{lora}")
+        lora_tag = f"lora:{lora}"
+        if lora_tag not in tags:
+            tags.append(lora_tag)
     
     # Format file size
     file_size_str = f"{workflow.file_size / 1024:.1f} KB" if workflow.file_size else "Unknown"
@@ -149,6 +159,19 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
             padding: 0.2rem 0.4rem;
             font-size: 0.65rem;
             border-radius: 2px;
+        }}
+        
+        .tag-collection {{
+            background: transparent;
+            color: var(--nasa-blue);
+            border: 1px solid var(--nasa-blue);
+            font-weight: 400;
+            padding: 0.2rem 0.4rem;
+            font-size: 0.65rem;
+            border-radius: 2px;
+            display: inline-block;
+            margin-right: 0.25rem;
+            margin-bottom: 0.25rem;
         }}
         
         .btn-primary {{
@@ -357,6 +380,21 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
                             <button onclick="saveNewTag()" class="btn-secondary" style="text-decoration: none; padding: 0.25rem 0.5rem; font-size: 0.75rem;">Save</button>
                             <button onclick="cancelAddTag()" class="bg-gray-500 text-white px-2 py-1 rounded text-xs hover:bg-gray-600 ml-1">Cancel</button>
                         </div>
+                    </div>
+                    
+                    <!-- Collections -->
+                    <div class="mb-4">
+                        <h4 class="font-medium mb-2" style="color: var(--nasa-gray);">Collections:</h4>
+                        <div id="workflow-collections" class="mb-2">
+                            {''.join(f'''<span class="tag-collection" style="margin-right: 0.25rem; margin-bottom: 0.25rem; display: inline-flex; align-items: center; gap: 4px;">
+                                {html_escape.escape(collection.name)}
+                                <button onclick="removeFromCollection('{collection.id}', '{html_escape.escape(collection.name)}')" class="text-xs" style="color: var(--nasa-white); background: transparent; border: none; cursor: pointer;" title="Remove from collection">×</button>
+                            </span>''' 
+                                    for collection in workflow.collections) if workflow.collections else '<span class="text-xs" style="color: var(--nasa-gray);">No collections assigned</span>'}
+                        </div>
+                        <button onclick="addToCollections()" class="btn-secondary" style="text-decoration: none; padding: 0.25rem 0.75rem; font-size: 0.75rem;">
+                            📚 Add to Collections
+                        </button>
                     </div>
                     
                     <!-- Client and Project Fields -->
@@ -823,6 +861,216 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
                 setTimeout(() => document.body.removeChild(toast), 2000);
             }
         }
+
+        function addToCollections() {
+            const workflowId = '{{WORKFLOW_ID_PLACEHOLDER}}';
+            // Open collection picker for this single workflow
+            openCollectionPicker([workflowId]);
+        }
+
+        async function removeFromCollection(collectionId, collectionName) {
+            if (!confirm(`Remove this workflow from collection "${collectionName}"?`)) {
+                return;
+            }
+            
+            const workflowId = '{{WORKFLOW_ID_PLACEHOLDER}}';
+            
+            try {
+                // Get current collections for this workflow
+                const response = await fetch(`/api/workflows/${workflowId}`);
+                if (!response.ok) throw new Error('Failed to fetch workflow');
+                
+                const workflow = await response.json();
+                const currentCollectionIds = workflow.collections?.map(c => c.id) || [];
+                
+                // Remove the specified collection
+                const updatedCollectionIds = currentCollectionIds.filter(id => id !== collectionId);
+                
+                // Update workflow collections
+                const updateResponse = await fetch(`/api/workflows/${workflowId}/collections`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ collection_ids: updatedCollectionIds })
+                });
+                
+                if (!updateResponse.ok) throw new Error('Failed to update collections');
+                
+                // Reload page to show updated collections
+                location.reload();
+                
+            } catch (error) {
+                console.error('Error removing from collection:', error);
+                alert('Failed to remove from collection');
+            }
+        }
+
+        // Collection Picker Functions (same as catalog page)
+        let collectionPickerWorkflows = [];
+
+        function openCollectionPicker(workflowIds) {
+            collectionPickerWorkflows = workflowIds;
+            
+            // Create modal if it doesn't exist
+            if (!document.getElementById('collection-picker-modal')) {
+                const modal = document.createElement('div');
+                modal.id = 'collection-picker-modal';
+                modal.className = 'fixed inset-0 z-50 hidden';
+                modal.innerHTML = `
+                    <div class="fixed inset-0 bg-black bg-opacity-50" onclick="closeCollectionPicker()"></div>
+                    <div class="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-lg">
+                        <div class="confirmation-dialog p-6 m-4">
+                            <div class="flex justify-between items-center mb-4">
+                                <h2 class="text-xl font-bold" style="color: var(--nasa-dark);">📚 ADD TO COLLECTIONS</h2>
+                                <button onclick="closeCollectionPicker()" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+                            </div>
+                            
+                            <div class="mb-4 p-3 border border-gray-200 rounded" style="border-color: var(--nasa-gray);">
+                                <div class="flex space-x-2">
+                                    <input type="text" id="quick-collection-name" class="search-input flex-1" placeholder="Create new collection...">
+                                    <button onclick="createQuickCollection()" class="btn-primary" style="padding: 0.5rem;">➕</button>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <div id="collection-picker-list" class="space-y-2 max-h-60 overflow-y-auto">
+                                    <!-- Collections will be loaded here -->
+                                </div>
+                            </div>
+                            
+                            <div class="flex justify-end space-x-2">
+                                <button onclick="closeCollectionPicker()" class="btn-secondary">Cancel</button>
+                                <button onclick="saveCollectionAssignments()" class="btn-primary">Save</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            }
+            
+            document.getElementById('collection-picker-modal').classList.remove('hidden');
+            loadCollectionPickerList();
+        }
+
+        function closeCollectionPicker() {
+            const modal = document.getElementById('collection-picker-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+                const quickName = document.getElementById('quick-collection-name');
+                if (quickName) quickName.value = '';
+            }
+            collectionPickerWorkflows = [];
+        }
+
+        async function loadCollectionPickerList() {
+            try {
+                const response = await fetch('/api/collections');
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                const collections = data.collections || [];
+                
+                const container = document.getElementById('collection-picker-list');
+                if (!container) return;
+                
+                container.innerHTML = '';
+                
+                if (collections.length === 0) {
+                    container.innerHTML = '<p class="filter-label text-center py-4">No collections yet. Create one above.</p>';
+                    return;
+                }
+                
+                collections.forEach(collection => {
+                    const item = document.createElement('div');
+                    item.className = 'collection-picker-item';
+                    item.setAttribute('data-collection-id', collection.id);
+                    
+                    item.innerHTML = `
+                        <div class="collection-color-dot" style="background-color: ${collection.color || '#105bd8'}"></div>
+                        <div class="flex-1">
+                            <div class="filter-label">${collection.name}</div>
+                            ${collection.description ? `<div class="text-xs" style="color: var(--nasa-gray);">${collection.description}</div>` : ''}
+                        </div>
+                        <div class="text-xs" style="color: var(--nasa-gray);">${collection.file_count || 0} workflows</div>
+                    `;
+                    
+                    item.addEventListener('click', function() {
+                        item.classList.toggle('selected');
+                    });
+                    
+                    container.appendChild(item);
+                });
+                
+            } catch (error) {
+                console.error('Error loading collections:', error);
+            }
+        }
+
+        async function createQuickCollection() {
+            const nameInput = document.getElementById('quick-collection-name');
+            if (!nameInput) return;
+            
+            const name = nameInput.value.trim();
+            if (!name) return;
+            
+            try {
+                const response = await fetch('/api/collections', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        name: name,
+                        description: '',
+                        color: '#105bd8'
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    alert(error.detail || 'Failed to create collection');
+                    return;
+                }
+                
+                nameInput.value = '';
+                await loadCollectionPickerList();
+                
+            } catch (error) {
+                console.error('Error creating collection:', error);
+                alert('Failed to create collection');
+            }
+        }
+
+        async function saveCollectionAssignments() {
+            const selectedCollectionIds = Array.from(
+                document.querySelectorAll('.collection-picker-item.selected')
+            ).map(item => item.getAttribute('data-collection-id'));
+            
+            if (collectionPickerWorkflows.length === 0) {
+                closeCollectionPicker();
+                return;
+            }
+            
+            try {
+                for (const workflowId of collectionPickerWorkflows) {
+                    const response = await fetch(`/api/workflows/${workflowId}/collections`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ collection_ids: selectedCollectionIds })
+                    });
+                    
+                    if (!response.ok) {
+                        console.error(`Failed to update workflow ${workflowId}`);
+                    }
+                }
+                
+                closeCollectionPicker();
+                
+                // Reload page to show updated collections
+                location.reload();
+                
+            } catch (error) {
+                console.error('Error saving collection assignments:', error);
+                alert('Failed to update collections');
+            }
+        }
     </script>
 </body>
 </html>'''
@@ -1003,8 +1251,8 @@ def generate_nodes_section_html(workflow_json):
     return html
 
 app = FastAPI(
-    title="💡 Comfy Light Table",
-    description="Quality of Life Improvements with drag-and-drop processing",
+    title="Comfy Light Table",
+    description="Quality of Life Improvements with workflow catalog indexing",
     version="1.0.0"
 )
 
@@ -1083,6 +1331,138 @@ manager = ConnectionManager()
 async def get_interface():
     """Serve the main web interface."""
     return HTMLResponse(content=get_interface_html(), status_code=200)
+
+@app.post("/scan-directory")
+async def scan_directory(request: Request):
+    """Scan a directory for workflow files and add them to the catalog."""
+    logger.info("🔍 Scan directory endpoint called")
+    try:
+        # Log raw request details
+        logger.info(f"Content-Type: {request.headers.get('content-type')}")
+        logger.info(f"Request method: {request.method}")
+        
+        # Try to get the JSON data
+        try:
+            data = await request.json()
+            logger.info(f"✅ Successfully parsed JSON: {data}")
+        except Exception as json_error:
+            logger.error(f"❌ JSON parsing error: {json_error}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(json_error)}")
+            
+        logger.info(f"Scan directory request data: {data}")
+        directory_path = data.get('directory') or data.get('directory_path')  # Support both field names
+        recursive = data.get('recursive', True)
+        
+        if not directory_path:
+            raise HTTPException(status_code=400, detail="directory is required")
+        
+        directory = Path(directory_path)
+        
+        # Validate directory exists and is accessible
+        if not directory.exists():
+            raise HTTPException(status_code=404, detail=f"Directory not found: {directory}")
+        
+        if not directory.is_dir():
+            raise HTTPException(status_code=400, detail=f"Path is not a directory: {directory}")
+        
+        # Generate unique task ID for tracking
+        task_id = str(uuid.uuid4())
+        
+        # Initialize task tracking
+        task_info = {
+            "id": task_id,
+            "type": "directory_scan",
+            "directory": str(directory),
+            "status": "scanning",
+            "files_found": 0,
+            "files_processed": 0,
+            "errors": []
+        }
+        
+        processing_tasks[task_id] = task_info
+        
+        # Broadcast scan started
+        await manager.broadcast({
+            "type": "scan_started",
+            "task_id": task_id,
+            "directory": str(directory)
+        })
+        
+        # Start directory scanning asynchronously
+        asyncio.create_task(scan_directory_async(task_id, directory, recursive))
+        
+        return JSONResponse(content={
+            "task_id": task_id,
+            "directory": str(directory),
+            "status": "scanning"
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting directory scan: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/process-file-path")
+async def process_file_path(request: Request):
+    """Process a workflow file from a local file path."""
+    try:
+        data = await request.json()
+        file_path_str = data.get('file_path')
+        
+        if not file_path_str:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        
+        file_path = Path(file_path_str)
+        
+        # Validate file exists and is accessible
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+        
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail=f"Path is not a file: {file_path}")
+        
+        # Check if it's a supported file type
+        if file_path.suffix.lower() not in {'.png', '.webp', '.jpg', '.jpeg', '.json'}:
+            raise HTTPException(status_code=400, detail="Unsupported file type. Use PNG, WEBP, JPG, JPEG, or JSON files.")
+        
+        # Generate unique task ID
+        task_id = str(uuid.uuid4())
+        
+        # Initialize task tracking
+        task_info = {
+            "id": task_id,
+            "filename": file_path.name,
+            "status": "processing", 
+            "file_path": str(file_path),
+            "workflow": None,
+            "analysis": None,
+            "error": None
+        }
+        
+        processing_tasks[task_id] = task_info
+        
+        # Broadcast task started
+        await manager.broadcast({
+            "type": "task_started",
+            "task_id": task_id,
+            "filename": file_path.name
+        })
+        
+        # Process file asynchronously
+        asyncio.create_task(process_file_path_async(task_id, file_path))
+        
+        return JSONResponse(content={
+            "task_id": task_id,
+            "filename": file_path.name,
+            "status": "queued"
+        })
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing file path request: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload")
 async def upload_files(files: List[UploadFile] = File(...)):
@@ -1187,6 +1567,108 @@ async def process_file_async(task_id: str, file_path: Path):
         task_info["analysis"] = analysis
         
         # Update status
+        task_info["status"] = "storing"
+        await manager.broadcast({
+            "type": "task_update",
+            "task_id": task_id,
+            "status": "storing",
+            "message": "Storing workflow in database..."
+        })
+        
+        # Store in database if available
+        workflow_id = None
+        if DATABASE_AVAILABLE:
+            try:
+                db_manager = get_database_manager()
+                workflow_manager = WorkflowFileManager(db_manager)
+                
+                # For web uploads, we'll store the workflow data without requiring a permanent file
+                workflow_name = file_path.stem
+                
+                # Get image metadata if it's an image file
+                image_metadata = None
+                if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'}:
+                    try:
+                        from PIL import Image
+                        with Image.open(file_path) as img:
+                            image_metadata = {
+                                "width": img.width,
+                                "height": img.height,
+                                "format": img.format
+                            }
+                    except Exception:
+                        image_metadata = {"width": None, "height": None, "format": file_path.suffix[1:].upper()}
+                
+                # Store workflow data like ComfyUI does - just extract and save the workflow
+                workflow_manager = WorkflowFileManager(db_manager)
+                
+                # Generate a descriptive name for the workflow entry
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                workflow_display_name = f"{workflow_name}_{timestamp}"
+                
+                # Store using the workflow manager (which expects a file path but we'll use a virtual one)
+                import tempfile
+                import os
+                
+                # Create a temporary file to satisfy the workflow manager's file path requirement
+                with tempfile.NamedTemporaryFile(suffix=file_path.suffix, delete=False) as temp_file:
+                    if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'}:
+                        # Copy the image content to temp file
+                        with open(file_path, 'rb') as source:
+                            temp_file.write(source.read())
+                    else:
+                        # Write the JSON workflow
+                        temp_file.write(json.dumps(workflow, indent=2).encode())
+                    
+                    temp_path = Path(temp_file.name)
+                
+                try:
+                    # Store in database using the workflow manager
+                    workflow_file = workflow_manager.add_workflow_file(
+                        file_path=temp_path,
+                        workflow_data=workflow,
+                        image_metadata=image_metadata,
+                        tags=[],  # Auto-tagging will happen
+                        collections=["web-imported"],  # Mark as web imported
+                        notes=f"Imported via web interface on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        auto_analyze=True
+                    )
+                    
+                    # Update the file path to be more descriptive
+                    with db_manager.get_session() as session:
+                        db_workflow = session.query(WorkflowFile).filter_by(id=workflow_file.id).first()
+                        if db_workflow:
+                            db_workflow.file_path = f"Imported/{workflow_display_name}{file_path.suffix}"
+                            db_workflow.filename = f"{workflow_display_name}{file_path.suffix}"
+                            session.commit()
+                    
+                finally:
+                    # Clean up temp file
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+                    
+                    # Add image metadata if available
+                    if image_metadata:
+                        workflow_file.image_width = image_metadata.get('width')
+                        workflow_file.image_height = image_metadata.get('height')
+                        workflow_file.image_format = image_metadata.get('format')
+                    
+                    session.add(workflow_file)
+                    session.commit()
+                    
+                    workflow_id = workflow_file.id
+                    task_info["workflow_id"] = workflow_id
+                
+                logger.info(f"✅ Stored uploaded workflow '{workflow_name}' in database with ID {workflow_id}")
+                logger.info(f"� Workflow processed from web upload (no permanent file created)")
+                
+            except Exception as db_error:
+                logger.error(f"Error storing in database: {db_error}")
+                # Continue with HTML generation as fallback
+        
+        # Update status
         task_info["status"] = "generating"
         await manager.broadcast({
             "type": "task_update",
@@ -1195,7 +1677,7 @@ async def process_file_async(task_id: str, file_path: Path):
             "message": "Generating visualization..."
         })
         
-        # Generate HTML visualization
+        # Generate HTML visualization (as backup/legacy support)
         workflow_name = file_path.stem
         associated_image = str(file_path) if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'} else None
         
@@ -1210,7 +1692,7 @@ async def process_file_async(task_id: str, file_path: Path):
         task_info["status"] = "completed"
         
         # Broadcast completion
-        await manager.broadcast({
+        completion_data = {
             "type": "task_completed",
             "task_id": task_id,
             "filename": task_info["filename"],
@@ -1221,7 +1703,14 @@ async def process_file_async(task_id: str, file_path: Path):
                 "input_nodes": len(analysis["input_nodes"]),
                 "output_nodes": len(analysis["output_nodes"])
             }
-        })
+        }
+        
+        # Include workflow ID if stored in database
+        if task_info.get("workflow_id"):
+            completion_data["workflow_id"] = task_info["workflow_id"]
+            completion_data["redirect_url"] = f"/catalog"  # Redirect to catalog to see the new workflow
+        
+        await manager.broadcast(completion_data)
         
     except Exception as e:
         logger.error(f"Error processing task {task_id}: {e}")
@@ -1242,6 +1731,277 @@ async def process_file_async(task_id: str, file_path: Path):
                 file_path.unlink()
         except:
             pass
+
+async def process_file_path_async(task_id: str, file_path: Path):
+    """Process a workflow file from a local file path without uploading."""
+    task_info = processing_tasks[task_id]
+    
+    try:
+        # Update status
+        task_info["status"] = "extracting"
+        await manager.broadcast({
+            "type": "task_update",
+            "task_id": task_id,
+            "status": "extracting",
+            "message": "Extracting workflow from file..."
+        })
+        
+        # Extract workflow based on file type
+        workflow = None
+        if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'}:
+            # Extract from image
+            workflow = extract_workflow_from_image(file_path)
+        elif file_path.suffix.lower() == '.json':
+            # Load JSON workflow
+            with open(file_path, 'r') as f:
+                raw_workflow = json.load(f)
+            workflow = ui_to_api_format(raw_workflow)
+        
+        if not workflow:
+            raise ValueError("No ComfyUI workflow found in file")
+        
+        task_info["workflow"] = workflow
+        
+        # Update status
+        task_info["status"] = "analyzing"
+        await manager.broadcast({
+            "type": "task_update",
+            "task_id": task_id,
+            "status": "analyzing",
+            "message": "Analyzing workflow structure..."
+        })
+        
+        # Analyze workflow
+        analysis = analyze_workflow(workflow)
+        task_info["analysis"] = analysis
+        
+        # Update status
+        task_info["status"] = "storing"
+        await manager.broadcast({
+            "type": "task_update",
+            "task_id": task_id,
+            "status": "storing",
+            "message": "Storing workflow in database..."
+        })
+        
+        # Store in database if available
+        workflow_id = None
+        if DATABASE_AVAILABLE:
+            try:
+                db_manager = get_database_manager()
+                workflow_manager = WorkflowFileManager(db_manager)
+                
+                # Process the file in place - no copying or moving
+                workflow_name = file_path.stem
+                
+                # Get image metadata if it's an image file
+                image_metadata = None
+                if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'}:
+                    try:
+                        from PIL import Image
+                        with Image.open(file_path) as img:
+                            image_metadata = {
+                                "width": img.width,
+                                "height": img.height,
+                                "format": img.format
+                            }
+                    except Exception:
+                        image_metadata = {"width": None, "height": None, "format": file_path.suffix[1:].upper()}
+                
+                # Store in database using the original file path
+                workflow_file = workflow_manager.add_workflow_file(
+                    file_path=file_path,  # Use the original file path
+                    workflow_data=workflow,
+                    image_metadata=image_metadata,
+                    auto_analyze=True
+                )
+                
+                workflow_id = workflow_file.id
+                task_info["workflow_id"] = workflow_id
+                
+                logger.info(f"✅ Stored workflow '{workflow_name}' in database with ID {workflow_id}")
+                logger.info(f"📁 Using original file path: {file_path}")
+                
+            except Exception as db_error:
+                logger.error(f"Error storing in database: {db_error}")
+                # Continue with HTML generation as fallback
+        
+        # Update status
+        task_info["status"] = "generating"
+        await manager.broadcast({
+            "type": "task_update",
+            "task_id": task_id,
+            "status": "generating",
+            "message": "Generating visualization..."
+        })
+        
+        # Generate HTML visualization (as backup/legacy support)
+        workflow_name = file_path.stem
+        associated_image = str(file_path) if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'} else None
+        
+        html_content = generate_html_visual(
+            workflow=workflow,
+            workflow_name=workflow_name,
+            server_address=None,
+            image_path=associated_image
+        )
+        
+        task_info["html_content"] = html_content
+        task_info["status"] = "completed"
+        
+        # Broadcast completion
+        completion_data = {
+            "type": "task_completed",
+            "task_id": task_id,
+            "filename": task_info["filename"],
+            "analysis": {
+                "total_nodes": analysis["total_nodes"],
+                "node_types": len(analysis["node_types"]),
+                "connections": len(analysis["connections"]),
+                "input_nodes": len(analysis["input_nodes"]),
+                "output_nodes": len(analysis["output_nodes"])
+            }
+        }
+        
+        # Include workflow ID if stored in database
+        if task_info.get("workflow_id"):
+            completion_data["workflow_id"] = task_info["workflow_id"]
+            completion_data["redirect_url"] = f"/catalog"
+        
+        await manager.broadcast(completion_data)
+        
+    except Exception as e:
+        logger.error(f"Error processing task {task_id}: {e}")
+        task_info["status"] = "error"
+        task_info["error"] = str(e)
+        
+        await manager.broadcast({
+            "type": "task_error",
+            "task_id": task_id,
+            "filename": task_info["filename"],
+            "error": str(e)
+        })
+
+async def scan_directory_async(task_id: str, directory: Path, recursive: bool = True):
+    """Scan a directory for workflow files and add them to the catalog."""
+    task_info = processing_tasks[task_id]
+    
+    try:
+        if not DATABASE_AVAILABLE:
+            raise ValueError("Database not available for directory scanning")
+            
+        db_manager = get_database_manager()
+        workflow_manager = WorkflowFileManager(db_manager)
+        
+        # Update status
+        task_info["status"] = "scanning"
+        await manager.broadcast({
+            "type": "task_update",
+            "task_id": task_id,
+            "status": "scanning",
+            "message": f"Scanning directory: {directory}"
+        })
+        
+        # Find workflow files
+        file_patterns = ['*.png', '*.webp', '*.jpg', '*.jpeg', '*.json']
+        workflow_files = []
+        
+        for pattern in file_patterns:
+            if recursive:
+                workflow_files.extend(directory.rglob(pattern))
+            else:
+                workflow_files.extend(directory.glob(pattern))
+        
+        task_info["files_found"] = len(workflow_files)
+        logger.info(f"Found {len(workflow_files)} potential workflow files in {directory}")
+        
+        # Process each file
+        processed = 0
+        for file_path in workflow_files:
+            try:
+                # Update progress
+                await manager.broadcast({
+                    "type": "task_update", 
+                    "task_id": task_id,
+                    "status": "processing",
+                    "message": f"Processing {file_path.name} ({processed + 1}/{len(workflow_files)})"
+                })
+                
+                # Extract workflow based on file type
+                workflow = None
+                if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'}:
+                    # Try to extract workflow from image
+                    try:
+                        workflow = extract_workflow_from_image(file_path)
+                    except:
+                        continue  # Skip images without workflows
+                elif file_path.suffix.lower() == '.json':
+                    # Load JSON workflow
+                    try:
+                        with open(file_path, 'r') as f:
+                            raw_workflow = json.load(f)
+                        workflow = ui_to_api_format(raw_workflow)
+                    except:
+                        continue  # Skip invalid JSON files
+                
+                if workflow:
+                    # Get image metadata if it's an image file
+                    image_metadata = None
+                    if file_path.suffix.lower() in {'.png', '.webp', '.jpg', '.jpeg'}:
+                        try:
+                            from PIL import Image
+                            with Image.open(file_path) as img:
+                                image_metadata = {
+                                    "width": img.width,
+                                    "height": img.height,
+                                    "format": img.format
+                                }
+                        except Exception:
+                            image_metadata = None
+                    
+                    # Add to database using the actual file path
+                    workflow_file = workflow_manager.add_workflow_file(
+                        file_path=file_path,
+                        workflow_data=workflow,
+                        image_metadata=image_metadata,
+                        collections=["directory-scan"],
+                        auto_analyze=True
+                    )
+                    
+                    processed += 1
+                    task_info["files_processed"] = processed
+                    logger.info(f"✅ Added {file_path.name} to catalog (ID: {workflow_file.id})")
+                
+            except Exception as e:
+                error_msg = f"Error processing {file_path.name}: {str(e)}"
+                task_info["errors"].append(error_msg)
+                logger.error(error_msg)
+        
+        # Completion
+        task_info["status"] = "completed"
+        completion_data = {
+            "type": "scan_completed",
+            "task_id": task_id,
+            "directory": str(directory),
+            "files_found": task_info["files_found"],
+            "files_processed": task_info["files_processed"],
+            "errors": len(task_info["errors"])
+        }
+        
+        await manager.broadcast(completion_data)
+        logger.info(f"✅ Directory scan completed: {processed}/{len(workflow_files)} files added to catalog")
+        
+    except Exception as e:
+        logger.error(f"Error scanning directory {directory}: {e}")
+        task_info["status"] = "error"
+        task_info["error"] = str(e)
+        
+        await manager.broadcast({
+            "type": "scan_error",
+            "task_id": task_id,
+            "directory": str(directory),
+            "error": str(e)
+        })
 
 @app.get("/task/{task_id}")
 async def get_task_status(task_id: str):
@@ -1290,6 +2050,8 @@ async def get_workflows(
     node_type: Optional[str] = None,
     collection: Optional[str] = None,
     search: Optional[str] = None,
+    sort_field: str = "ingest_date",
+    sort_direction: str = "desc",
     limit: int = 50,
     offset: int = 0
 ):
@@ -1301,24 +2063,8 @@ async def get_workflows(
         db_manager = get_database_manager()
         logger.info(f"Using database: {db_manager.database_url}")
         with db_manager.get_session() as session:
-            # Query only the columns we need to avoid schema issues
-            query = session.query(
-                WorkflowFile.id,
-                WorkflowFile.filename, 
-                WorkflowFile.file_path,
-                WorkflowFile.file_hash,
-                WorkflowFile.file_size,
-                WorkflowFile.node_count,
-                WorkflowFile.node_types,
-                WorkflowFile.style_tags,
-                WorkflowFile.workflow_data,
-                WorkflowFile.image_width,
-                WorkflowFile.image_height,
-                WorkflowFile.notes,
-                WorkflowFile.created_at,
-                WorkflowFile.updated_at,
-                WorkflowFile.file_modified_at
-            )
+            # Query WorkflowFile objects to access relationships
+            query = session.query(WorkflowFile)
             
             # Apply search filter (simplified - no joins for now)
             if search:
@@ -1344,34 +2090,57 @@ async def get_workflows(
             if node_type:
                 query = query.filter(WorkflowFile.node_types.contains(node_type))
             
+            # Apply collection filter
+            if collection:
+                # Join with collections to filter by collection name
+                query = query.join(WorkflowFile.collections).filter(Collection.name == collection)
+            
+            # Apply sorting
+            sort_column = None
+            if sort_field == "ingest_date":
+                sort_column = WorkflowFile.created_at
+            elif sort_field == "file_date":
+                sort_column = WorkflowFile.file_modified_at
+            elif sort_field == "name":
+                sort_column = WorkflowFile.filename
+            elif sort_field == "file_size":
+                sort_column = WorkflowFile.file_size
+            else:
+                sort_column = WorkflowFile.created_at  # Default fallback
+            
+            if sort_direction == "asc":
+                query = query.order_by(sort_column.asc())
+            else:
+                query = query.order_by(sort_column.desc())
+            
             # Get total count for pagination
             total = query.count()
             logger.info(f"Found {total} workflows in database")
             
             # Apply pagination
-            workflow_rows = query.offset(offset).limit(limit).all()
-            logger.info(f"Retrieved {len(workflow_rows)} workflow rows after pagination")
+            workflows = query.offset(offset).limit(limit).all()
+            logger.info(f"Retrieved {len(workflows)} workflows after pagination")
             
             # Convert to JSON-serializable format
             results = []
-            for row in workflow_rows:
+            for workflow in workflows:
                 # Check if workflow has image data (PNG/JPEG files typically have image metadata)
-                has_image = (row.image_width is not None and row.image_height is not None) or (
-                    row.filename and row.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
+                has_image = (workflow.image_width is not None and workflow.image_height is not None) or (
+                    workflow.filename and workflow.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))
                 )
                 
                 # Extract checkpoints and LoRAs from workflow data
                 checkpoints = []
                 loras = []
                 try:
-                    if row.workflow_data:
+                    if workflow.workflow_data:
                         import json
-                        if isinstance(row.workflow_data, str):
-                            workflow_json = json.loads(row.workflow_data)
+                        if isinstance(workflow.workflow_data, str):
+                            workflow_json = json.loads(workflow.workflow_data)
                         else:
-                            workflow_json = row.workflow_data
+                            workflow_json = workflow.workflow_data
                         
-                        logger.info(f"Processing workflow {row.id} with {len(workflow_json)} nodes")
+                        logger.info(f"Processing workflow {workflow.id} with {len(workflow_json)} nodes")
                         
                         # Look through all nodes to find checkpoints and LoRAs
                         if isinstance(workflow_json, dict):
@@ -1412,49 +2181,59 @@ async def get_workflows(
                         
                         logger.info(f"Extracted {len(checkpoints)} checkpoints and {len(loras)} LoRAs")
                 except Exception as e:
-                    logger.error(f"Could not extract checkpoints/loras from workflow {row.id}: {e}")
+                    logger.error(f"Could not extract checkpoints/loras from workflow {workflow.id}: {e}")
                     import traceback
                     traceback.print_exc()
                 
-                # Build tags from various sources
+                # Build tags from proper relationship + legacy JSON field
                 tags = []
-                if row.style_tags:
+                
+                # Get tags from proper Tag relationship (preferred)
+                if workflow.tags:
+                    tags.extend([tag.name for tag in workflow.tags])
+                
+                # Also check legacy style_tags JSON field for backwards compatibility
+                if workflow.style_tags and not tags:  # Only use if no proper tags exist
                     try:
-                        if isinstance(row.style_tags, str):
+                        if isinstance(workflow.style_tags, str):
                             import json
-                            style_tags = json.loads(row.style_tags)
+                            style_tags = json.loads(workflow.style_tags)
                         else:
-                            style_tags = row.style_tags
+                            style_tags = workflow.style_tags
                         tags.extend(style_tags)
                     except Exception:
                         pass
                 
-                # Add checkpoint and lora tags
+                # Add checkpoint and lora tags (but only if not already present)
                 for checkpoint in checkpoints:
-                    tags.append(f"checkpoint:{checkpoint}")
+                    checkpoint_tag = f"checkpoint:{checkpoint}"
+                    if checkpoint_tag not in tags:
+                        tags.append(checkpoint_tag)
                 for lora in loras:
-                    tags.append(f"lora:{lora}")
+                    lora_tag = f"lora:{lora}"
+                    if lora_tag not in tags:
+                        tags.append(lora_tag)
                 
                 workflow_data = {
-                    "id": row.id,
-                    "name": row.filename,  # Use filename as name
-                    "filename": row.filename,
-                    "description": row.notes or "",  # Use notes as description
-                    "created_at": row.file_modified_at.isoformat() if row.file_modified_at else (row.created_at.isoformat() if row.created_at else None),
-                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-                    "file_size": row.file_size,
-                    "checksum": row.file_hash,  # Use file_hash as checksum
+                    "id": workflow.id,
+                    "name": workflow.filename,  # Use filename as name
+                    "filename": workflow.filename,
+                    "description": workflow.notes or "",  # Use notes as description
+                    "created_at": workflow.file_modified_at.isoformat() if workflow.file_modified_at else (workflow.created_at.isoformat() if workflow.created_at else None),
+                    "updated_at": workflow.updated_at.isoformat() if workflow.updated_at else None,
+                    "file_size": workflow.file_size,
+                    "checksum": workflow.file_hash,  # Use file_hash as checksum
                     "has_image": has_image,
-                    "node_count": row.node_count,
-                    "node_types": row.node_types if row.node_types else [],
+                    "node_count": workflow.node_count,
+                    "node_types": workflow.node_types if workflow.node_types else [],
                     "checkpoints": checkpoints,
                     "loras": loras,
                     "tags": tags,
-                    "collections": [],  # Temporarily disabled - would require separate query
+                    "collections": [collection.name for collection in workflow.collections],
                     "clients": [],  # Temporarily disabled until schema sync fixed
                     "projects": [],  # Temporarily disabled until schema sync fixed
-                    "file_path": row.file_path,  # Add the missing file path field
-                    "thumbnail_path": f"/api/workflows/{row.id}/thumbnail" if has_image else None
+                    "file_path": workflow.file_path,  # Add the missing file path field
+                    "thumbnail_path": f"/api/workflows/{workflow.id}/thumbnail" if has_image else None
                 }
                 results.append(workflow_data)
             
@@ -1649,23 +2428,19 @@ async def add_workflow_tag(workflow_id: str, request: dict):
             if not workflow:
                 raise HTTPException(status_code=404, detail="Workflow not found")
             
-            # For now, we'll add tags to the style_tags JSON field
-            # TODO: Use proper Tag table when schema is synced
-            current_tags = []
-            if workflow.style_tags:
-                try:
-                    if isinstance(workflow.style_tags, str):
-                        current_tags = json.loads(workflow.style_tags)
-                    else:
-                        current_tags = workflow.style_tags
-                except Exception:
-                    current_tags = []
+            # Use proper Tag relationship (database prevents duplicates automatically)
+            from database.models import Tag
             
-            # Deduplicate existing tags and add new tag if not present
-            current_tags = list(dict.fromkeys(current_tags))  # Remove duplicates while preserving order
-            if tag_name not in current_tags:
-                current_tags.append(tag_name)
-            workflow.style_tags = json.dumps(current_tags)
+            # Find or create the tag
+            tag = session.query(Tag).filter_by(name=tag_name).first()
+            if not tag:
+                tag = Tag(name=tag_name)
+                session.add(tag)
+                session.flush()
+            
+            # Add tag to workflow if not already present (SQLAlchemy handles deduplication)
+            if tag not in workflow.tags:
+                workflow.tags.append(tag)
             workflow.updated_at = datetime.utcnow()
             session.commit()
             
@@ -1695,20 +2470,14 @@ async def delete_workflow_tag(workflow_id: str, request: dict):
             if not workflow:
                 raise HTTPException(status_code=404, detail="Workflow not found")
             
-            current_tags = []
-            if workflow.style_tags:
-                try:
-                    if isinstance(workflow.style_tags, str):
-                        current_tags = json.loads(workflow.style_tags)
-                    else:
-                        current_tags = workflow.style_tags
-                except Exception:
-                    current_tags = []
+            # Use proper Tag relationship
+            from database.models import Tag
             
-            if tag_name in current_tags:
-                # Remove ALL occurrences of the tag (in case of duplicates)
-                current_tags = [tag for tag in current_tags if tag != tag_name]
-                workflow.style_tags = json.dumps(current_tags)
+            # Find the tag
+            tag = session.query(Tag).filter_by(name=tag_name).first()
+            if tag and tag in workflow.tags:
+                # Remove tag from workflow
+                workflow.tags.remove(tag)
                 workflow.updated_at = datetime.utcnow()
                 session.commit()
             
@@ -1740,22 +2509,25 @@ async def update_workflow_tag(workflow_id: str, request: dict):
             if not workflow:
                 raise HTTPException(status_code=404, detail="Workflow not found")
             
-            current_tags = []
-            if workflow.style_tags:
-                try:
-                    if isinstance(workflow.style_tags, str):
-                        current_tags = json.loads(workflow.style_tags)
-                    else:
-                        current_tags = workflow.style_tags
-                except Exception:
-                    current_tags = []
+            # Use proper Tag relationship
+            from database.models import Tag
             
-            if old_tag in current_tags:
-                # Replace ALL occurrences of old tag with new tag, then deduplicate
-                current_tags = [new_tag if tag == old_tag else tag for tag in current_tags]
-                # Remove duplicates while preserving order
-                current_tags = list(dict.fromkeys(current_tags))
-                workflow.style_tags = json.dumps(current_tags)
+            # Find the old tag
+            old_tag_obj = session.query(Tag).filter_by(name=old_tag).first()
+            if old_tag_obj and old_tag_obj in workflow.tags:
+                # Remove old tag
+                workflow.tags.remove(old_tag_obj)
+                
+                # Find or create new tag
+                new_tag_obj = session.query(Tag).filter_by(name=new_tag).first()
+                if not new_tag_obj:
+                    new_tag_obj = Tag(name=new_tag)
+                    session.add(new_tag_obj)
+                    session.flush()
+                
+                # Add new tag if not already present
+                if new_tag_obj not in workflow.tags:
+                    workflow.tags.append(new_tag_obj)
                 workflow.updated_at = datetime.utcnow()
                 session.commit()
             
@@ -1779,37 +2551,157 @@ async def deduplicate_all_tags():
         updated_count = 0
         
         with db_manager.get_session() as session:
-            workflows = session.query(WorkflowFile).filter(WorkflowFile.style_tags.isnot(None)).all()
+            workflows = session.query(WorkflowFile).all()
             
             for workflow in workflows:
-                current_tags = []
                 if workflow.style_tags:
                     try:
                         if isinstance(workflow.style_tags, str):
                             current_tags = json.loads(workflow.style_tags)
                         else:
                             current_tags = workflow.style_tags
-                    except Exception:
-                        continue
-                
-                # Deduplicate tags while preserving order
-                deduplicated_tags = list(dict.fromkeys(current_tags))
-                
-                if len(deduplicated_tags) != len(current_tags):
-                    workflow.style_tags = json.dumps(deduplicated_tags)
-                    workflow.updated_at = datetime.utcnow()
-                    updated_count += 1
+                        
+                        # Remove duplicates while preserving order
+                        original_count = len(current_tags)
+                        deduplicated_tags = list(dict.fromkeys(current_tags))
+                        
+                        if len(deduplicated_tags) != original_count:
+                            workflow.style_tags = json.dumps(deduplicated_tags)
+                            workflow.updated_at = datetime.utcnow()
+                            updated_count += 1
+                            logger.info(f"Deduped tags for {workflow.filename}: {original_count} -> {len(deduplicated_tags)}")
+                    
+                    except Exception as e:
+                        logger.error(f"Error processing tags for {workflow.filename}: {e}")
             
             session.commit()
         
         return {
             "success": True, 
-            "message": f"Deduplicated tags for {updated_count} workflows",
-            "updated_count": updated_count
+            "message": f"Deduplicated tags for {updated_count} workflows"
         }
         
     except Exception as e:
         logger.error(f"Error deduplicating tags: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/clean-auto-tags")
+async def clean_auto_generated_tags():
+    """Admin endpoint to remove common auto-generated tags that create clutter."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    # Common auto-generated tags that might be causing clutter
+    auto_tag_patterns = [
+        'simple', 'moderate', 'complex',  # Complexity tags
+        'lora', 'controlnet', 'upscaling', 'checkpoint',  # Generic node type tags
+        'text-to-image', 'image-to-image'  # Generic workflow type tags
+    ]
+    
+    try:
+        db_manager = get_database_manager()
+        updated_count = 0
+        removed_tags_count = 0
+        
+        with db_manager.get_session() as session:
+            workflows = session.query(WorkflowFile).all()
+            
+            for workflow in workflows:
+                if workflow.style_tags:
+                    try:
+                        if isinstance(workflow.style_tags, str):
+                            current_tags = json.loads(workflow.style_tags)
+                        else:
+                            current_tags = workflow.style_tags
+                        
+                        # Remove auto-generated tags
+                        original_count = len(current_tags)
+                        cleaned_tags = [tag for tag in current_tags if tag not in auto_tag_patterns]
+                        
+                        if len(cleaned_tags) != original_count:
+                            workflow.style_tags = json.dumps(cleaned_tags)
+                            workflow.updated_at = datetime.utcnow()
+                            updated_count += 1
+                            removed_tags_count += (original_count - len(cleaned_tags))
+                            logger.info(f"Cleaned auto-tags for {workflow.filename}: {original_count} -> {len(cleaned_tags)}")
+                    
+                    except Exception as e:
+                        logger.error(f"Error cleaning tags for {workflow.filename}: {e}")
+            
+            session.commit()
+        
+        return {
+            "success": True, 
+            "message": f"Cleaned auto-generated tags from {updated_count} workflows, removed {removed_tags_count} tags"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cleaning auto-generated tags: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/admin/status")
+async def admin_status():
+    """Simple admin status check endpoint."""
+    return {
+        "status": "ok",
+        "database_available": DATABASE_AVAILABLE,
+        "endpoints": ["deduplicate-tags", "clean-auto-tags", "migrate-tags-to-relations"]
+    }
+
+
+@app.post("/api/admin/migrate-tags-to-relations")
+async def migrate_tags_to_relations():
+    """Admin endpoint to migrate JSON tags to proper Tag relationships."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        db_manager = get_database_manager()
+        migrated_count = 0
+        
+        from database.models import Tag
+        
+        with db_manager.get_session() as session:
+            workflows = session.query(WorkflowFile).all()
+            
+            for workflow in workflows:
+                if workflow.style_tags and not workflow.tags:  # Only migrate if no proper tags exist
+                    try:
+                        if isinstance(workflow.style_tags, str):
+                            tag_names = json.loads(workflow.style_tags)
+                        else:
+                            tag_names = workflow.style_tags
+                        
+                        if tag_names:
+                            # Create/find tags and add to workflow
+                            for tag_name in tag_names:
+                                if tag_name.strip():  # Skip empty tags
+                                    tag = session.query(Tag).filter_by(name=tag_name.strip()).first()
+                                    if not tag:
+                                        tag = Tag(name=tag_name.strip())
+                                        session.add(tag)
+                                        session.flush()
+                                    
+                                    if tag not in workflow.tags:
+                                        workflow.tags.append(tag)
+                            
+                            migrated_count += 1
+                            logger.info(f"Migrated {len(tag_names)} tags for {workflow.filename}")
+                    
+                    except Exception as e:
+                        logger.error(f"Error migrating tags for {workflow.filename}: {e}")
+            
+            session.commit()
+        
+        return {
+            "success": True, 
+            "message": f"Migrated tags for {migrated_count} workflows to proper relationships"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error migrating tags to relations: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1966,8 +2858,207 @@ async def get_collections():
     if not DATABASE_AVAILABLE:
         raise HTTPException(status_code=503, detail="Database not available")
     
-    # Temporarily return empty list to avoid schema conflicts
-    return {"collections": []}
+    try:
+        db_manager = get_database_manager()
+        with db_manager.get_session() as session:
+            collections = session.query(Collection).order_by(Collection.sort_order, Collection.name).all()
+            
+            result = []
+            for collection in collections:
+                file_count = len(collection.files) if collection.files else 0
+                result.append({
+                    "id": collection.id,
+                    "name": collection.name,
+                    "description": collection.description,
+                    "color": collection.color,
+                    "is_system": collection.is_system,
+                    "sort_order": collection.sort_order,
+                    "file_count": file_count,
+                    "created_at": collection.created_at.isoformat() if collection.created_at else None
+                })
+            
+            return {"collections": result}
+        
+    except Exception as e:
+        logger.error(f"Error fetching collections: {e}")
+        return {"collections": []}
+
+
+@app.post("/api/collections")
+async def create_collection(request: Request):
+    """Create a new collection."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        data = await request.json()
+        name = data.get("name", "").strip()
+        description = data.get("description", "").strip()
+        color = data.get("color", "#105bd8")  # Default NASA blue
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="Collection name is required")
+        
+        db_manager = get_database_manager()
+        with db_manager.get_session() as session:
+            # Check if collection name already exists
+            existing = session.query(Collection).filter(Collection.name == name).first()
+            if existing:
+                raise HTTPException(status_code=400, detail="Collection name already exists")
+            
+            # Create new collection
+            collection = Collection(
+                name=name,
+                description=description,
+                color=color,
+                is_system=False,
+                sort_order=0
+            )
+            
+            session.add(collection)
+            session.commit()
+            
+            return {
+                "success": True,
+                "collection": {
+                    "id": collection.id,
+                    "name": collection.name,
+                    "description": collection.description,
+                    "color": collection.color,
+                    "file_count": 0
+                }
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating collection: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create collection")
+
+
+@app.put("/api/collections/{collection_id}")
+async def update_collection(collection_id: str, request: Request):
+    """Update an existing collection."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        data = await request.json()
+        
+        db_manager = get_database_manager()
+        with db_manager.get_session() as session:
+            collection = session.query(Collection).filter(Collection.id == collection_id).first()
+            if not collection:
+                raise HTTPException(status_code=404, detail="Collection not found")
+            
+            # Update fields if provided
+            if "name" in data:
+                name = data["name"].strip()
+                if not name:
+                    raise HTTPException(status_code=400, detail="Collection name cannot be empty")
+                
+                # Check if new name already exists (except for this collection)
+                existing = session.query(Collection).filter(
+                    Collection.name == name, 
+                    Collection.id != collection_id
+                ).first()
+                if existing:
+                    raise HTTPException(status_code=400, detail="Collection name already exists")
+                
+                collection.name = name
+            
+            if "description" in data:
+                collection.description = data["description"].strip()
+            
+            if "color" in data:
+                collection.color = data["color"]
+            
+            session.commit()
+            
+            file_count = len(collection.files) if collection.files else 0
+            return {
+                "success": True,
+                "collection": {
+                    "id": collection.id,
+                    "name": collection.name,
+                    "description": collection.description,
+                    "color": collection.color,
+                    "file_count": file_count
+                }
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating collection: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update collection")
+
+
+@app.delete("/api/collections/{collection_id}")
+async def delete_collection(collection_id: str):
+    """Delete a collection."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        db_manager = get_database_manager()
+        with db_manager.get_session() as session:
+            collection = session.query(Collection).filter(Collection.id == collection_id).first()
+            if not collection:
+                raise HTTPException(status_code=404, detail="Collection not found")
+            
+            if collection.is_system:
+                raise HTTPException(status_code=400, detail="Cannot delete system collections")
+            
+            session.delete(collection)
+            session.commit()
+            
+            return {"success": True, "message": "Collection deleted"}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting collection: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete collection")
+
+
+@app.post("/api/workflows/{workflow_id}/collections")
+async def assign_workflow_to_collection(workflow_id: str, request: Request):
+    """Assign a workflow to collections."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        data = await request.json()
+        collection_ids = data.get("collection_ids", [])
+        
+        db_manager = get_database_manager()
+        with db_manager.get_session() as session:
+            workflow = session.query(WorkflowFile).filter(WorkflowFile.id == workflow_id).first()
+            if not workflow:
+                raise HTTPException(status_code=404, detail="Workflow not found")
+            
+            # Clear existing collections
+            workflow.collections.clear()
+            
+            # Add new collections
+            if collection_ids:
+                collections = session.query(Collection).filter(Collection.id.in_(collection_ids)).all()
+                for collection in collections:
+                    workflow.collections.append(collection)
+            
+            session.commit()
+            
+            return {
+                "success": True,
+                "collections": [collection.name for collection in workflow.collections]
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error assigning workflow to collections: {e}")
+        raise HTTPException(status_code=500, detail="Failed to assign collections")
 
 
 # Temporarily disabled until schema sync is fixed
@@ -2032,7 +3123,7 @@ async def catalog_page():
             <div style="padding: 2rem; text-align: center;">
                 <h1>📚 Workflow Catalog</h1>
                 <p>Database is not available. Please ensure the database is properly configured.</p>
-                <a href="/" style="color: blue;">← Back to Upload Interface</a>
+                <a href="/" style="color: blue;">← Back to Directory Scanner</a>
             </div>
         </body>
         </html>
@@ -2320,6 +3411,262 @@ async def catalog_page():
                 color: var(--nasa-white);
                 transform: translateY(1px);
             }
+            
+            /* Filter and Sort Controls */
+            .filter-label {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                font-size: 0.75rem;
+                font-weight: 400;
+                color: var(--nasa-dark);
+                text-transform: uppercase;
+                letter-spacing: 0.025em;
+            }
+            
+            .filter-select {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                background: var(--nasa-white);
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
+                padding: 0.5rem;
+                font-size: 0.75rem;
+                font-weight: 400;
+                text-transform: uppercase;
+                letter-spacing: 0.025em;
+                cursor: pointer;
+                transition: all 0.1s ease;
+                min-width: 120px;
+            }
+            
+            .filter-select:hover {
+                background: var(--nasa-gray);
+                color: var(--nasa-white);
+                transform: translateY(1px);
+            }
+            
+            .filter-select:focus {
+                outline: none;
+                border-color: var(--nasa-blue);
+                box-shadow: 0 0 0 2px var(--nasa-blue);
+            }
+            
+            .filter-select option {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                background: var(--nasa-white);
+                color: var(--nasa-dark);
+                padding: 0.5rem;
+            }
+            
+            .clear-filters {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                color: var(--nasa-gray);
+                font-size: 0.75rem;
+                text-decoration: underline;
+                cursor: pointer;
+                transition: color 0.1s ease;
+                text-transform: uppercase;
+                letter-spacing: 0.025em;
+            }
+            
+            .clear-filters:hover {
+                color: var(--nasa-dark);
+            }
+            
+            .search-input {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                background: var(--nasa-white);
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
+                padding: 0.5rem;
+                font-size: 0.75rem;
+                font-weight: 400;
+                width: 100%;
+                transition: all 0.1s ease;
+            }
+            
+            .search-input:hover {
+                border-color: var(--nasa-blue);
+            }
+            
+            .search-input:focus {
+                outline: none;
+                border-color: var(--nasa-blue);
+                box-shadow: 0 0 0 2px var(--nasa-blue);
+            }
+            
+            .search-input::placeholder {
+                color: var(--nasa-gray);
+                text-transform: uppercase;
+                letter-spacing: 0.025em;
+            }
+            
+            /* Custom Dropdown Component */
+            .custom-dropdown {
+                position: relative;
+                display: inline-block;
+                min-width: 120px;
+            }
+            
+            .dropdown-button {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                background: var(--nasa-white);
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
+                padding: 0.5rem;
+                font-size: 0.75rem;
+                font-weight: 400;
+                text-transform: uppercase;
+                letter-spacing: 0.025em;
+                cursor: pointer;
+                transition: all 0.1s ease;
+                width: 100%;
+                text-align: left;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .dropdown-button:hover {
+                background: var(--nasa-gray);
+                color: var(--nasa-white);
+                transform: translateY(1px);
+            }
+            
+            .dropdown-button:focus {
+                outline: none;
+                border-color: var(--nasa-blue);
+                box-shadow: 0 0 0 2px var(--nasa-blue);
+            }
+            
+            .dropdown-arrow {
+                font-size: 0.6rem;
+                transition: transform 0.1s ease;
+            }
+            
+            .dropdown-button.open .dropdown-arrow {
+                transform: rotate(180deg);
+            }
+            
+            .dropdown-menu {
+                position: absolute;
+                top: 100%;
+                left: 0;
+                right: 0;
+                background: var(--nasa-white);
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
+                border-top: none;
+                z-index: 1000;
+                max-height: 200px;
+                overflow-y: auto;
+                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+                display: none;
+            }
+            
+            .dropdown-menu.open {
+                display: block;
+            }
+            
+            .dropdown-option {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                padding: 0.5rem;
+                font-size: 0.75rem;
+                font-weight: 400;
+                text-transform: uppercase;
+                letter-spacing: 0.025em;
+                cursor: pointer;
+                color: var(--nasa-dark);
+                transition: all 0.1s ease;
+                border-bottom: 1px solid var(--nasa-gray);
+            }
+            
+            .dropdown-option:last-child {
+                border-bottom: none;
+            }
+            
+            .dropdown-option:hover {
+                background: var(--nasa-gray);
+                color: var(--nasa-white);
+            }
+            
+            .dropdown-option.selected {
+                background: var(--nasa-blue);
+                color: var(--nasa-white);
+            }
+            
+            /* Bulk Selection */
+            .workflow-card {
+                position: relative;
+                transition: all 0.1s ease;
+            }
+            
+            .workflow-card.bulk-select-mode {
+                cursor: pointer;
+            }
+            
+            .workflow-card.selected {
+                border-color: var(--nasa-blue);
+                box-shadow: 0 0 0 2px var(--nasa-blue);
+            }
+            
+            .workflow-checkbox {
+                position: absolute;
+                top: 8px;
+                left: 8px;
+                z-index: 10;
+                opacity: 0;
+                transition: opacity 0.1s ease;
+            }
+            
+            .bulk-select-mode .workflow-checkbox {
+                opacity: 1;
+            }
+            
+            .workflow-checkbox input[type="checkbox"] {
+                width: 20px;
+                height: 20px;
+                border: 2px solid var(--nasa-dark);
+                border-radius: 2px;
+                background: var(--nasa-white);
+                cursor: pointer;
+            }
+            
+            .workflow-checkbox input[type="checkbox"]:checked {
+                background: var(--nasa-blue);
+                border-color: var(--nasa-blue);
+            }
+            
+            /* Collection tags in picker */
+            .collection-picker-item {
+                display: flex;
+                align-items: center;
+                padding: 0.5rem;
+                border: 1px solid var(--nasa-gray);
+                border-radius: 2px;
+                cursor: pointer;
+                transition: all 0.1s ease;
+            }
+            
+            .collection-picker-item:hover {
+                background: var(--nasa-gray);
+                color: var(--nasa-white);
+            }
+            
+            .collection-picker-item.selected {
+                background: var(--nasa-blue);
+                color: var(--nasa-white);
+                border-color: var(--nasa-blue);
+            }
+            
+            .collection-color-dot {
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                margin-right: 0.5rem;
+                border: 1px solid var(--nasa-dark);
+            }
         </style>
     </head>
     <body>
@@ -2335,7 +3682,7 @@ async def catalog_page():
                     </div>
                     <div class="flex items-center space-x-4">
                         <a href="/" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition-colors">
-                            📤 Upload Workflows
+                            Scan Directory
                         </a>
                     </div>
                 </div>
@@ -2346,35 +3693,79 @@ async def catalog_page():
                         <!-- Search -->
                         <div class="flex-1 min-w-64">
                             <input type="text" id="search-input" placeholder="Search workflows..." 
-                                   class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                   class="search-input">
                         </div>
                         
                         <!-- Checkpoint Filter -->
                         <div class="flex items-center space-x-2">
-                            <label class="text-sm font-medium text-gray-700">Checkpoint:</label>
-                            <select id="checkpoint-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <label class="filter-label">Checkpoint:</label>
+                            <select id="checkpoint-filter" class="filter-select">
                                 <option value="">All Checkpoints</option>
                             </select>
                         </div>
                         
                         <!-- LoRA Filter -->
                         <div class="flex items-center space-x-2">
-                            <label class="text-sm font-medium text-gray-700">LoRA:</label>
-                            <select id="lora-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <label class="filter-label">LoRA:</label>
+                            <select id="lora-filter" class="filter-select">
                                 <option value="">All LoRAs</option>
                             </select>
                         </div>
                         
                         <!-- Node Type Filter -->
                         <div class="flex items-center space-x-2">
-                            <label class="text-sm font-medium text-gray-700">Node Type:</label>
-                            <select id="node-type-filter" class="border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <label class="filter-label">Node Type:</label>
+                            <select id="node-type-filter" class="filter-select">
                                 <option value="">All Node Types</option>
                             </select>
                         </div>
                         
+                        <!-- Collection Filter -->
+                        <div class="flex items-center space-x-2">
+                            <label class="filter-label">Collection:</label>
+                            <div id="collection-dropdown" class="custom-dropdown">
+                                <button id="collection-filter-button" class="dropdown-button" type="button">
+                                    <span id="collection-filter-text">All Collections</span>
+                                    <span class="dropdown-arrow">▼</span>
+                                </button>
+                                <div id="collection-filter-menu" class="dropdown-menu">
+                                    <div class="dropdown-option selected" data-value="">All Collections</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Sort Widget -->
+                        <div class="flex items-center space-x-2">
+                            <label class="filter-label">Sort by:</label>
+                            <div id="sort-dropdown" class="custom-dropdown">
+                                <button id="sort-field-button" class="dropdown-button" type="button">
+                                    <span id="sort-field-text">Ingest Date</span>
+                                    <span class="dropdown-arrow">▼</span>
+                                </button>
+                                <div id="sort-field-menu" class="dropdown-menu">
+                                    <div class="dropdown-option selected" data-value="ingest_date">Ingest Date</div>
+                                    <div class="dropdown-option" data-value="file_date">File Date</div>
+                                    <div class="dropdown-option" data-value="name">Name</div>
+                                    <div class="dropdown-option" data-value="file_size">File Size</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Sort Direction -->
+                        <div class="flex items-center space-x-2">
+                            <button id="sort-direction" class="btn-secondary flex items-center space-x-1" title="Click to toggle sort direction">
+                                <span id="sort-direction-text">Newest First</span>
+                                <span id="sort-direction-icon">↓</span>
+                            </button>
+                        </div>
+                        
+                        <!-- Bulk Actions Toggle -->
+                        <button id="toggle-bulk-select" class="btn-secondary">
+                            � Select Workflows
+                        </button>
+                        
                         <!-- Clear Filters -->
-                        <button id="clear-filters" class="text-sm text-gray-500 hover:text-gray-700 underline">
+                        <button id="clear-filters" class="clear-filters">
                             Clear All
                         </button>
                     </div>
@@ -2404,9 +3795,9 @@ async def catalog_page():
             <div id="empty" class="hidden text-center py-12">
                 <div class="text-6xl mb-6" style="color: var(--nasa-gray);">�</div>
                 <h2 class="text-2xl font-medium text-white mb-4">No workflows found</h2>
-                <p class="text-white mb-6 font-mono">ADJUST WORKFLOW PARAMETERS OR UPLOAD NEW WORKFLOWS</p>
+                <p class="text-white mb-6 font-mono">ADJUST WORKFLOW PARAMETERS OR SCAN NEW DIRECTORIES</p>
                 <a href="/" class="btn-primary">
-                    Upload Workflow
+                    Scan Directory
                 </a>
             </div>
             
@@ -2423,6 +3814,58 @@ async def catalog_page():
             </div>
         </main>
 
+        <!-- Collection Picker Modal -->
+        <div id="collection-picker-modal" class="fixed inset-0 z-50 hidden">
+            <!-- Backdrop -->
+            <div class="fixed inset-0 bg-black bg-opacity-50" onclick="closeCollectionPicker()"></div>
+            
+            <!-- Modal Content -->
+            <div class="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-full max-w-lg">
+                <div class="confirmation-dialog p-6 m-4">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold" style="color: var(--nasa-dark);">📚 ADD TO COLLECTIONS</h2>
+                        <button onclick="closeCollectionPicker()" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+                    </div>
+                    
+                    <!-- Create New Collection -->
+                    <div class="mb-4 p-3 border border-gray-200 rounded" style="border-color: var(--nasa-gray);">
+                        <div class="flex space-x-2">
+                            <input type="text" id="quick-collection-name" class="search-input flex-1" placeholder="Create new collection...">
+                            <button onclick="createQuickCollection()" class="btn-primary" style="padding: 0.5rem;">
+                                ➕
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Collection List -->
+                    <div class="mb-4">
+                        <div id="collection-picker-list" class="space-y-2 max-h-60 overflow-y-auto">
+                            <!-- Collections will be loaded here -->
+                        </div>
+                    </div>
+                    
+                    <!-- Actions -->
+                    <div class="flex justify-end space-x-2">
+                        <button onclick="closeCollectionPicker()" class="btn-secondary">Cancel</button>
+                        <button onclick="saveCollectionAssignments()" class="btn-primary">Save</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bulk Actions Bar (appears when workflows are selected) -->
+        <div id="bulk-actions-bar" class="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-40 hidden">
+            <div class="confirmation-dialog p-4 flex items-center space-x-4">
+                <span id="selected-count" class="filter-label">0 workflows selected</span>
+                <button onclick="bulkAddToCollection()" class="btn-primary">
+                    📚 Add to Collection
+                </button>
+                <button onclick="clearSelection()" class="btn-secondary">
+                    Clear Selection
+                </button>
+            </div>
+        </div>
+
         <script>
             // Configuration
             const API_BASE = '/api';
@@ -2432,11 +3875,15 @@ async def catalog_page():
             let allCheckpoints = [];
             let allLoras = [];
             let allNodeTypes = [];
+            let allCollections = [];
             let currentFilters = {
                 search: '',
                 checkpoint: '',
                 lora: '',
                 nodeType: '',
+                collection: '',
+                sortField: 'ingest_date',
+                sortDirection: 'desc', // desc = newest first, asc = oldest first
                 offset: 0,
                 limit: 50
             };
@@ -2444,10 +3891,140 @@ async def catalog_page():
 
             // Initialize page
             document.addEventListener('DOMContentLoaded', function() {
+                initializeCustomDropdowns(); // Initialize custom dropdowns
+                updateSortDirectionText(); // Initialize sort UI
                 loadFilters();
                 loadWorkflows();
                 setupEventListeners();
             });
+
+            // Custom Dropdown Functions
+            function initializeCustomDropdowns() {
+                // Initialize all custom dropdowns
+                const dropdowns = document.querySelectorAll('.custom-dropdown');
+                
+                dropdowns.forEach(dropdown => {
+                    const button = dropdown.querySelector('.dropdown-button');
+                    const menu = dropdown.querySelector('.dropdown-menu');
+                    const options = dropdown.querySelectorAll('.dropdown-option');
+                    
+                    // Toggle dropdown on button click
+                    button.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        
+                        // Close all other dropdowns
+                        document.querySelectorAll('.dropdown-menu.open').forEach(otherMenu => {
+                            if (otherMenu !== menu) {
+                                otherMenu.classList.remove('open');
+                                otherMenu.parentElement.querySelector('.dropdown-button').classList.remove('open');
+                            }
+                        });
+                        
+                        // Toggle this dropdown
+                        menu.classList.toggle('open');
+                        button.classList.toggle('open');
+                    });
+                    
+                    // Handle option selection
+                    options.forEach(option => {
+                        option.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            
+                            // Update selected state
+                            options.forEach(opt => opt.classList.remove('selected'));
+                            option.classList.add('selected');
+                            
+                            // Update button text
+                            const textElement = button.querySelector('span:first-child');
+                            textElement.textContent = option.textContent;
+                            
+                            // Close dropdown
+                            menu.classList.remove('open');
+                            button.classList.remove('open');
+                            
+                            // Trigger change event
+                            const changeEvent = new CustomEvent('dropdownChange', {
+                                detail: {
+                                    value: option.getAttribute('data-value'),
+                                    text: option.textContent,
+                                    dropdown: dropdown
+                                }
+                            });
+                            dropdown.dispatchEvent(changeEvent);
+                        });
+                    });
+                });
+                
+                // Close dropdowns when clicking outside
+                document.addEventListener('click', function() {
+                    document.querySelectorAll('.dropdown-menu.open').forEach(menu => {
+                        menu.classList.remove('open');
+                        menu.parentElement.querySelector('.dropdown-button').classList.remove('open');
+                    });
+                });
+            }
+            
+            function setDropdownValue(dropdownId, value, text) {
+                const dropdown = document.getElementById(dropdownId);
+                if (!dropdown) return;
+                
+                const button = dropdown.querySelector('.dropdown-button');
+                const textElement = button.querySelector('span:first-child');
+                const options = dropdown.querySelectorAll('.dropdown-option');
+                
+                // Update selected state
+                options.forEach(option => {
+                    option.classList.remove('selected');
+                    if (option.getAttribute('data-value') === value) {
+                        option.classList.add('selected');
+                    }
+                });
+                
+                // Update button text
+                textElement.textContent = text;
+            }
+            
+            function addDropdownOption(dropdownMenuId, value, text, selected = false) {
+                const menu = document.getElementById(dropdownMenuId);
+                if (!menu) return;
+                
+                const option = document.createElement('div');
+                option.className = 'dropdown-option';
+                if (selected) option.classList.add('selected');
+                option.setAttribute('data-value', value);
+                option.textContent = text;
+                
+                // Add click handler
+                option.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    
+                    // Update selected state
+                    menu.querySelectorAll('.dropdown-option').forEach(opt => opt.classList.remove('selected'));
+                    option.classList.add('selected');
+                    
+                    // Update button text
+                    const dropdown = menu.parentElement;
+                    const button = dropdown.querySelector('.dropdown-button');
+                    const textElement = button.querySelector('span:first-child');
+                    textElement.textContent = option.textContent;
+                    
+                    // Close dropdown
+                    menu.classList.remove('open');
+                    button.classList.remove('open');
+                    
+                    // Trigger change event
+                    const changeEvent = new CustomEvent('dropdownChange', {
+                        detail: {
+                            value: option.getAttribute('data-value'),
+                            text: option.textContent,
+                            dropdown: dropdown
+                        }
+                    });
+                    dropdown.dispatchEvent(changeEvent);
+                });
+                
+                menu.appendChild(option);
+            }
 
             function setupEventListeners() {
                 // Search input with debounce
@@ -2476,20 +4053,61 @@ async def catalog_page():
                     resetAndReload();
                 });
 
+                // Collection filter (custom dropdown)
+                document.getElementById('collection-dropdown').addEventListener('dropdownChange', function(e) {
+                    currentFilters.collection = e.detail.value;
+                    resetAndReload();
+                });
+
+                // Sort field change (custom dropdown)
+                document.getElementById('sort-dropdown').addEventListener('dropdownChange', function(e) {
+                    currentFilters.sortField = e.detail.value;
+                    updateSortDirectionText();
+                    resetAndReload();
+                });
+
+                // Sort direction toggle
+                document.getElementById('sort-direction').addEventListener('click', function() {
+                    currentFilters.sortDirection = currentFilters.sortDirection === 'desc' ? 'asc' : 'desc';
+                    updateSortDirectionText();
+                    resetAndReload();
+                });
+
+                // Bulk select toggle
+                document.getElementById('toggle-bulk-select').addEventListener('click', function() {
+                    toggleBulkSelectMode();
+                });
+
                 // Clear filters
                 document.getElementById('clear-filters').addEventListener('click', function() {
                     document.getElementById('search-input').value = '';
-                    document.getElementById('checkpoint-filter').value = '';
-                    document.getElementById('lora-filter').value = '';
-                    document.getElementById('node-type-filter').value = '';
+                    
+                    // Reset regular select dropdowns (if any remain)
+                    const checkpointFilter = document.getElementById('checkpoint-filter');
+                    const loraFilter = document.getElementById('lora-filter');
+                    const nodeTypeFilter = document.getElementById('node-type-filter');
+                    
+                    if (checkpointFilter) checkpointFilter.value = '';
+                    if (loraFilter) loraFilter.value = '';
+                    if (nodeTypeFilter) nodeTypeFilter.value = '';
+                    
+                    // Reset custom dropdowns
+                    setDropdownValue('collection-dropdown', '', 'All Collections');
+                    setDropdownValue('sort-dropdown', 'ingest_date', 'Ingest Date');
+                    
                     currentFilters = {
                         search: '',
                         checkpoint: '',
                         lora: '',
                         nodeType: '',
+                        collection: '',
+                        sortField: 'ingest_date',
+                        sortDirection: 'desc',
                         offset: 0,
                         limit: 50
                     };
+                    
+                    updateSortDirectionText();
                     resetAndReload();
                 });
 
@@ -2498,6 +4116,57 @@ async def catalog_page():
                     currentFilters.offset += currentFilters.limit;
                     loadWorkflows(true);
                 });
+            }
+
+            function updateSortDirectionText() {
+                const sortField = currentFilters.sortField;
+                const sortDirection = currentFilters.sortDirection;
+                const textElement = document.getElementById('sort-direction-text');
+                const iconElement = document.getElementById('sort-direction-icon');
+                
+                let text = '';
+                let icon = '';
+                
+                if (sortDirection === 'desc') {
+                    icon = '↓';
+                    switch (sortField) {
+                        case 'ingest_date':
+                            text = 'Newest Ingested';
+                            break;
+                        case 'file_date':
+                            text = 'Newest Files';
+                            break;
+                        case 'name':
+                            text = 'Z→A';
+                            break;
+                        case 'file_size':
+                            text = 'Largest';
+                            break;
+                        default:
+                            text = 'Newest First';
+                    }
+                } else {
+                    icon = '↑';
+                    switch (sortField) {
+                        case 'ingest_date':
+                            text = 'Oldest Ingested';
+                            break;
+                        case 'file_date':
+                            text = 'Oldest Files';
+                            break;
+                        case 'name':
+                            text = 'A→Z';
+                            break;
+                        case 'file_size':
+                            text = 'Smallest';
+                            break;
+                        default:
+                            text = 'Oldest First';
+                    }
+                }
+                
+                textElement.textContent = text;
+                iconElement.textContent = icon;
             }
 
             function copyToClipboard(text) {
@@ -2645,6 +4314,9 @@ async def catalog_page():
                         nodeTypeSelect.appendChild(option);
                     });
 
+                    // Load collections separately
+                    await loadCollections();
+
                 } catch (error) {
                     console.error('Error loading filters:', error);
                 }
@@ -2657,6 +4329,9 @@ async def catalog_page():
                     // Build query parameters
                     const params = new URLSearchParams();
                     if (currentFilters.search) params.append('search', currentFilters.search);
+                    if (currentFilters.collection) params.append('collection', currentFilters.collection);
+                    params.append('sort_field', currentFilters.sortField);
+                    params.append('sort_direction', currentFilters.sortDirection);
                     params.append('limit', currentFilters.limit);
                     params.append('offset', currentFilters.offset);
 
@@ -2686,6 +4361,12 @@ async def catalog_page():
                     if (currentFilters.nodeType) {
                         workflows = workflows.filter(w => 
                             w.node_types && w.node_types.includes(currentFilters.nodeType)
+                        );
+                    }
+                    // Note: Collection filtering is done server-side, but keep for consistency
+                    if (currentFilters.collection && !params.has('collection')) {
+                        workflows = workflows.filter(w => 
+                            w.collections && w.collections.includes(currentFilters.collection)
                         );
                     }
                     
@@ -2748,7 +4429,8 @@ async def catalog_page():
 
             function createWorkflowCard(workflow) {
                 const div = document.createElement('div');
-                div.className = 'neo-brutalist-card';
+                div.className = 'neo-brutalist-card workflow-card';
+                div.setAttribute('data-workflow-id', workflow.id);
                 
                 const createdAt = workflow.created_at ? new Date(workflow.created_at).toLocaleDateString() : 'UNKNOWN';
                 
@@ -2776,6 +4458,11 @@ async def catalog_page():
                 ).join(' ');
                 
                 div.innerHTML = `
+                    <!-- Bulk Selection Checkbox -->
+                    <div class="workflow-checkbox">
+                        <input type="checkbox" id="checkbox-${workflow.id}" onchange="toggleWorkflowSelection('${workflow.id}')">
+                    </div>
+                    
                     ${workflow.has_image ? 
                         `<div class="thumbnail-container">
                             <img src="${API_BASE}/workflows/${workflow.id}/thumbnail" alt="${workflow.name}" class="thumbnail" 
@@ -3059,9 +4746,22 @@ def get_interface_html() -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>💡 Comfy Light Table</title>
+    <title>Comfy Light Table</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        :root {
+            --nasa-red: #fc3d21;
+            --nasa-blue: #105bd8;
+            --nasa-gray: #aeb0b5;
+            --nasa-white: #ffffff;
+            --nasa-dark: #212121;
+            --nasa-orange: #ff9d1e;
+        }
+        
+        * {
+            font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace !important;
+        }
+        
         .drop-zone {
             border: 2px dashed #cbd5e0;
             transition: all 0.3s ease;
@@ -3085,6 +4785,232 @@ def get_interface_html() -> str:
             0%, 100% { opacity: 1; }
             50% { opacity: 0.7; }
         }
+        
+        /* Directory Selector Styles */
+        .upload-section {
+            background: var(--nasa-white);
+            border: 1px solid var(--nasa-dark);
+            color: var(--nasa-dark);
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border-radius: 2px;
+        }
+        
+        .upload-icon {
+            font-size: 4rem;
+            font-weight: 400;
+            color: var(--nasa-dark);
+            margin-bottom: 1rem;
+        }
+        
+        .upload-section h2 {
+            font-size: 1.5rem;
+            font-weight: 400;
+            color: var(--nasa-dark);
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+        
+        .upload-description {
+            color: var(--nasa-gray);
+            margin-bottom: 2rem;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+        
+        .directory-selector-container {
+            display: flex;
+            justify-content: center;
+            margin: 2rem 0;
+        }
+        
+        .directory-select-btn {
+            background: transparent !important;
+            color: var(--nasa-dark) !important;
+            border: 1px solid var(--nasa-dark) !important;
+            font-weight: 400 !important;
+            padding: 1rem 2rem !important;
+            font-size: 16px !important;
+            border-radius: 2px !important;
+            cursor: pointer !important;
+            transition: all 0.1s ease !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
+            font-family: '3270 Nerd Font Mono', monospace !important;
+        }
+        
+        .directory-select-btn:hover {
+            background: var(--nasa-dark) !important;
+            color: var(--nasa-white) !important;
+        }
+        
+        .directory-input-container {
+            text-align: left;
+            margin: 1rem 0;
+        }
+        
+        .directory-path-input {
+            width: 100% !important;
+            background: var(--nasa-white) !important;
+            color: var(--nasa-dark) !important;
+            border: 1px solid var(--nasa-dark) !important;
+            font-weight: 400 !important;
+            padding: 0.75rem !important;
+            font-size: 14px !important;
+            border-radius: 2px !important;
+            font-family: '3270 Nerd Font Mono', monospace !important;
+            transition: all 0.1s ease !important;
+        }
+        
+        .directory-path-input:focus {
+            outline: none !important;
+            border-color: var(--nasa-blue) !important;
+            box-shadow: 0 0 0 2px rgba(0, 114, 188, 0.2) !important;
+        }
+        
+        .input-help-text {
+            font-size: 0.7rem;
+            color: var(--nasa-dark);
+            margin-top: 0.5rem;
+            opacity: 0.7;
+        }
+        
+        .directory-preview {
+            background: var(--nasa-white);
+            border: 1px solid var(--nasa-dark);
+            padding: 1.5rem;
+            margin: 1rem 0;
+            border-radius: 2px;
+        }
+        
+        .directory-info {
+            text-align: left;
+        }
+        
+        .directory-label {
+            font-size: 0.75rem;
+            font-weight: 400;
+            color: var(--nasa-dark);
+            margin-bottom: 0.5rem;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        
+        .directory-path {
+            font-size: 0.9rem;
+            color: var(--nasa-dark);
+            word-break: break-all;
+            margin-bottom: 0.5rem;
+            font-weight: 400;
+            background: var(--nasa-white);
+            border: 1px solid var(--nasa-dark);
+            padding: 0.5rem;
+            border-radius: 2px;
+        }
+        
+        .file-count {
+            font-size: 0.8rem;
+            color: var(--nasa-dark);
+            margin-bottom: 1rem;
+        }
+        
+        .change-directory-btn {
+            background: transparent !important;
+            color: var(--nasa-dark) !important;
+            border: 1px solid var(--nasa-dark) !important;
+            font-weight: 400 !important;
+            padding: 0.5rem 1rem !important;
+            font-size: 12px !important;
+            border-radius: 2px !important;
+            cursor: pointer !important;
+            transition: all 0.1s ease !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
+            font-family: '3270 Nerd Font Mono', monospace !important;
+        }
+        
+        .change-directory-btn:hover {
+            background: var(--nasa-dark) !important;
+            color: var(--nasa-white) !important;
+        }
+        
+        .scan-controls {
+            display: flex;
+            justify-content: center;
+            margin: 2rem 0;
+        }
+        
+        .scan-btn {
+            background: transparent !important;
+            color: var(--nasa-blue) !important;
+            border: 1px solid var(--nasa-blue) !important;
+            font-weight: 400 !important;
+            padding: 1rem 2rem !important;
+            font-size: 16px !important;
+            border-radius: 2px !important;
+            cursor: pointer !important;
+            transition: all 0.1s ease !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
+            font-family: '3270 Nerd Font Mono', monospace !important;
+        }
+        
+        .scan-btn:hover {
+            background: var(--nasa-blue) !important;
+            color: var(--nasa-white) !important;
+        }
+        
+        .scan-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            background: transparent;
+            color: var(--nasa-gray);
+            border-color: var(--nasa-gray);
+        }
+        
+        /* Navigation Buttons */
+        .nav-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+        
+        .nav-btn {
+            background: transparent !important;
+            color: var(--nasa-dark) !important;
+            border: 1px solid var(--nasa-dark) !important;
+            font-weight: 400 !important;
+            padding: 0.75rem 1.5rem !important;
+            font-size: 14px !important;
+            border-radius: 2px !important;
+            cursor: pointer !important;
+            transition: all 0.1s ease !important;
+            text-decoration: none !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
+            display: inline-block !important;
+            font-family: '3270 Nerd Font Mono', monospace !important;
+        }
+        
+        .nav-btn:hover {
+            background: var(--nasa-dark) !important;
+            color: var(--nasa-white) !important;
+            text-decoration: none !important;
+        }
+        
+        .nav-btn-primary:hover {
+            background: var(--nasa-blue);
+            color: var(--nasa-white);
+            border-color: var(--nasa-blue);
+        }
+        
+        .nav-btn-secondary:hover {
+            background: var(--nasa-orange);
+            color: var(--nasa-white);
+            border-color: var(--nasa-orange);
+        }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -3092,41 +5018,80 @@ def get_interface_html() -> str:
         <!-- Header -->
         <header class="text-center mb-8">
             <h1 class="text-5xl font-bold text-gray-900 mb-4">
-                💡 Comfy Light Table
+                COMFY LIGHT TABLE
             </h1>
             <p class="text-xl text-gray-600 max-w-2xl mx-auto mb-6">
-                Drag and drop your ComfyUI images or workflow JSON files to extract, analyze, and visualize workflows instantly
+                Index workflow files from your existing directories. Files remain in their original locations - this creates a searchable catalog database.
             </p>
             
             <!-- Navigation -->
-            <div class="flex justify-center space-x-4">
-                <a href="/catalog" 
-                   class="inline-flex items-center px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-medium">
-                    📚 Browse Workflow Catalog
+            <div class="nav-buttons">
+                <a href="/catalog" class="nav-btn nav-btn-primary">
+                    BROWSE CATALOG
                 </a>
-                <a href="#" onclick="document.getElementById('fileInput').click()" 
-                   class="inline-flex items-center px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors font-medium">
-                    📤 Upload New Workflows
+                <a href="#" onclick="scrollToScanner()" class="nav-btn nav-btn-secondary">
+                    SCAN DIRECTORY
                 </a>
             </div>
         </header>
 
-        <!-- Drop Zone -->
-        <div id="dropZone" class="drop-zone bg-white rounded-xl border-2 border-dashed border-gray-300 p-12 text-center mb-8 cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-all">
-            <div class="space-y-4">
-                <div class="text-6xl">📁</div>
-                <div class="space-y-2">
-                    <p class="text-2xl font-semibold text-gray-700">Drop files here</p>
-                    <p class="text-gray-500">or click to browse</p>
+        <!-- Directory Scanning -->
+        <div class="upload-section">
+            <div class="space-y-6">
+                <div class="text-center">
+                    <div class="upload-icon">DIR</div>
+                    <h2>SCAN DIRECTORY FOR WORKFLOWS</h2>
+                    <p class="upload-description">
+                        Index workflow files from an existing directory. Files remain in their original location.
+                    </p>
                 </div>
+                
+                <div class="max-w-2xl mx-auto">
+                    <div class="space-y-4">
+                        <!-- Directory Path Input -->
+                        <div class="directory-input-container">
+                            <label for="directoryPathInput" class="directory-label">DIRECTORY PATH:</label>
+                            <input type="text" 
+                                   id="directoryPathInput" 
+                                   class="directory-path-input"
+                                   placeholder="/Users/username/path/to/workflows"
+                                   spellcheck="false">
+                            <div class="input-help-text">
+                                Copy and paste the full path to your workflow directory
+                            </div>
+                        </div>
+                        
+                        <!-- Scan Button -->
+                        <div class="scan-controls">
+                            <button id="scanDirectoryBtn" class="scan-btn">
+                                START SCAN
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-4 space-y-2">
+                        <div class="flex items-center space-x-2">
+                            <input type="checkbox" id="recursiveCheckbox" class="rounded">
+                            <label for="recursiveCheckbox" class="text-sm text-gray-700">Scan subdirectories recursively</label>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <input type="checkbox" id="watchCheckbox" class="rounded">
+                            <label for="watchCheckbox" class="text-sm text-gray-700">Watch for new files (future feature)</label>
+                        </div>
+                    </div>
+                </div>
+                
                 <div class="flex justify-center space-x-4 text-sm text-gray-400">
-                    <span class="bg-gray-100 px-3 py-1 rounded-full">PNG</span>
-                    <span class="bg-gray-100 px-3 py-1 rounded-full">WebP</span>
-                    <span class="bg-gray-100 px-3 py-1 rounded-full">JPEG</span>
-                    <span class="bg-gray-100 px-3 py-1 rounded-full">JSON</span>
+                    <span class="bg-gray-100 px-3 py-1 rounded-full">Scans PNG</span>
+                    <span class="bg-gray-100 px-3 py-1 rounded-full">Scans WebP</span>
+                    <span class="bg-gray-100 px-3 py-1 rounded-full">Scans JPEG</span>
+                    <span class="bg-gray-100 px-3 py-1 rounded-full">Scans JSON</span>
+                </div>
+                
+                <div class="text-xs text-gray-500 text-center max-w-lg mx-auto">
+                    <p>Files will be indexed in place - no copying or moving. This creates a catalog of your existing workflows.</p>
                 </div>
             </div>
-            <input type="file" id="fileInput" multiple accept=".png,.webp,.jpg,.jpeg,.json" class="hidden">
         </div>
 
         <!-- Status Display -->
@@ -3141,8 +5106,7 @@ def get_interface_html() -> str:
     <!-- Footer -->
     <footer class="mt-16 py-8 border-t border-gray-200 text-center text-gray-500">
         <div class="flex items-center justify-center space-x-2">
-            <span class="text-2xl">💡</span>
-            <span class="font-medium">Comfy Light Table</span>
+            <span class="font-medium">COMFY LIGHT TABLE</span>
             <span>•</span>
             <span class="text-sm">Quality of Life Improvements</span>
         </div>
@@ -3157,7 +5121,7 @@ def get_interface_html() -> str:
         
         ws.onopen = function(event) {
             console.log('WebSocket connected');
-            showStatus('🟢 Connected to server', 'success');
+            showStatus('Connected to server', 'success');
         };
         
         ws.onmessage = function(event) {
@@ -3167,64 +5131,96 @@ def get_interface_html() -> str:
         
         ws.onclose = function(event) {
             console.log('WebSocket disconnected');
-            showStatus('🔴 Disconnected from server', 'error');
+            showStatus('Disconnected from server', 'error');
         };
 
-        // File handling
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
+        // Directory scanning elements
+        const directoryPathInput = document.getElementById('directoryPathInput');
+        const scanDirectoryBtn = document.getElementById('scanDirectoryBtn');
+        const recursiveCheckbox = document.getElementById('recursiveCheckbox');
         
-        dropZone.addEventListener('click', () => fileInput.click());
-        dropZone.addEventListener('dragover', handleDragOver);
-        dropZone.addEventListener('dragleave', handleDragLeave);
-        dropZone.addEventListener('drop', handleDrop);
-        fileInput.addEventListener('change', handleFileSelect);
+        // Default to recursive scanning
+        recursiveCheckbox.checked = true;
         
-        function handleDragOver(e) {
-            e.preventDefault();
-            dropZone.classList.add('dragover');
+        // Directory scanning event handler
+        scanDirectoryBtn.addEventListener('click', handleDirectoryScan);
+        
+        // Navigation helpers
+        function scrollToScanner() {
+            document.querySelector('.upload-section').scrollIntoView({ 
+                behavior: 'smooth' 
+            });
         }
         
-        function handleDragLeave(e) {
-            e.preventDefault();
-            dropZone.classList.remove('dragover');
-        }
+
         
-        function handleDrop(e) {
-            e.preventDefault();
-            dropZone.classList.remove('dragover');
-            const files = Array.from(e.dataTransfer.files);
-            uploadFiles(files);
-        }
-        
-        function handleFileSelect(e) {
-            const files = Array.from(e.target.files);
-            uploadFiles(files);
-        }
-        
-        async function uploadFiles(files) {
-            const formData = new FormData();
-            files.forEach(file => formData.append('files', file));
+        async function handleDirectoryScan() {
+            console.log('🔍 Directory scan button clicked');
             
-            showStatus(`📤 Uploading ${files.length} file(s)...`, 'processing');
+            // Get directory path from input
+            const directoryPath = directoryPathInput.value.trim();
+            console.log('📁 Directory path:', directoryPath);
+            
+            if (!directoryPath) {
+                showStatus('Please enter a directory path', 'error');
+                directoryPathInput.focus();
+                return;
+            }
+            
+            // Get recursive setting
+            const recursive = recursiveCheckbox.checked;
+            console.log('🔄 Recursive:', recursive);
+            
+            const confirmed = confirm(`This will scan "${directoryPath}" ${recursive ? 'recursively' : 'non-recursively'} for workflow files and add them to your catalog. Continue?`);
+            
+            if (!confirmed) {
+                console.log('❌ User cancelled scan');
+                return;
+            }
             
             try {
-                const response = await fetch('/upload', {
+                console.log('📤 Sending scan request...');
+                scanDirectoryBtn.disabled = true;
+                scanDirectoryBtn.textContent = 'SCANNING...';
+                
+                showStatus(`Scanning directory: ${directoryPath}`, 'processing');
+                
+                // Send request to scan directory endpoint
+                const response = await fetch('/scan-directory', {
                     method: 'POST',
-                    body: formData
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        directory: directoryPath,
+                        recursive: recursive
+                    })
                 });
                 
                 const result = await response.json();
-                console.log('Upload result:', result);
                 
-                // Clear file input
-                fileInput.value = '';
+                if (response.ok) {
+                    showStatus(`Directory scan started! Task ID: ${result.task_id}`, 'success');
+                    // The WebSocket will provide real-time updates
+                } else {
+                    showStatus(`Error: ${result.detail || 'Failed to start directory scan'}`, 'error');
+                }
                 
             } catch (error) {
-                console.error('Upload error:', error);
-                showStatus('❌ Upload failed', 'error');
+                console.error('Error starting directory scan:', error);
+                showStatus(`Scan error: ${error.message}`, 'error');
+            } finally {
+                scanDirectoryBtn.disabled = false;
+                scanDirectoryBtn.textContent = 'START SCAN';
             }
         }
+
+        
+
+
+
+
+
         
         function handleWebSocketMessage(data) {
             console.log('WebSocket message:', data);
@@ -3232,7 +5228,7 @@ def get_interface_html() -> str:
             switch(data.type) {
                 case 'task_started':
                     addTaskCard(data.task_id, data.filename);
-                    showStatus(`🚀 Started processing: ${data.filename}`, 'processing');
+                    showStatus(`Started processing: ${data.filename}`, 'processing');
                     break;
                     
                 case 'task_update':
@@ -3241,7 +5237,15 @@ def get_interface_html() -> str:
                     
                 case 'task_completed':
                     completeTaskCard(data.task_id, data.analysis);
-                    showStatus(`✅ Completed: ${data.filename}`, 'success');
+                    if (data.workflow_id) {
+                        showStatus(`Workflow saved to database! Redirecting to catalog...`, 'success');
+                        // Redirect to catalog after a brief delay
+                        setTimeout(() => {
+                            window.location.href = '/catalog';
+                        }, 2000);
+                    } else {
+                        showStatus(`✅ Completed: ${data.filename}`, 'success');
+                    }
                     break;
                     
                 case 'task_error':
@@ -3552,6 +5556,365 @@ def get_interface_html() -> str:
                 });
             }
         });
+
+        // Bulk Selection State
+        let bulkSelectMode = false;
+        let selectedWorkflows = new Set();
+
+        // Bulk Selection Functions
+        function toggleBulkSelectMode() {
+            bulkSelectMode = !bulkSelectMode;
+            const button = document.getElementById('toggle-bulk-select');
+            const grid = document.getElementById('workflow-grid');
+            const bulkBar = document.getElementById('bulk-actions-bar');
+            
+            if (bulkSelectMode) {
+                button.textContent = '❌ Cancel Selection';
+                button.classList.remove('btn-secondary');
+                button.classList.add('btn-danger');
+                grid.classList.add('bulk-select-mode');
+            } else {
+                button.textContent = '📋 Select Workflows';
+                button.classList.remove('btn-danger');
+                button.classList.add('btn-secondary');
+                grid.classList.remove('bulk-select-mode');
+                clearSelection();
+                bulkBar.classList.add('hidden');
+            }
+        }
+
+        function toggleWorkflowSelection(workflowId) {
+            if (!bulkSelectMode) return;
+            
+            const checkbox = document.getElementById(`checkbox-${workflowId}`);
+            const card = document.querySelector(`[data-workflow-id="${workflowId}"]`);
+            
+            if (checkbox.checked) {
+                selectedWorkflows.add(workflowId);
+                card.classList.add('selected');
+            } else {
+                selectedWorkflows.delete(workflowId);
+                card.classList.remove('selected');
+            }
+            
+            updateBulkActionsBar();
+        }
+
+        function clearSelection() {
+            selectedWorkflows.clear();
+            document.querySelectorAll('.workflow-checkbox input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+            });
+            document.querySelectorAll('.workflow-card.selected').forEach(card => {
+                card.classList.remove('selected');
+            });
+            updateBulkActionsBar();
+        }
+
+        function updateBulkActionsBar() {
+            const bulkBar = document.getElementById('bulk-actions-bar');
+            const countElement = document.getElementById('selected-count');
+            
+            if (selectedWorkflows.size > 0) {
+                bulkBar.classList.remove('hidden');
+                countElement.textContent = `${selectedWorkflows.size} workflow${selectedWorkflows.size === 1 ? '' : 's'} selected`;
+            } else {
+                bulkBar.classList.add('hidden');
+            }
+        }
+
+        function bulkAddToCollection() {
+            if (selectedWorkflows.size === 0) return;
+            openCollectionPicker(Array.from(selectedWorkflows));
+        }
+
+        // Collection Management Functions
+        let collectionPickerWorkflows = [];
+
+        function openCollectionPicker(workflowIds) {
+            collectionPickerWorkflows = workflowIds;
+            document.getElementById('collection-picker-modal').classList.remove('hidden');
+            loadCollectionPickerList();
+        }
+
+        function closeCollectionPicker() {
+            document.getElementById('collection-picker-modal').classList.add('hidden');
+            document.getElementById('quick-collection-name').value = '';
+            collectionPickerWorkflows = [];
+        }
+
+        async function loadCollectionPickerList() {
+            try {
+                const response = await fetch(`${API_BASE}/collections`);
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                const collections = data.collections || [];
+                
+                const container = document.getElementById('collection-picker-list');
+                container.innerHTML = '';
+                
+                if (collections.length === 0) {
+                    container.innerHTML = '<p class="filter-label text-center py-4">No collections yet. Create one above.</p>';
+                    return;
+                }
+                
+                collections.forEach(collection => {
+                    const item = document.createElement('div');
+                    item.className = 'collection-picker-item';
+                    item.setAttribute('data-collection-id', collection.id);
+                    
+                    item.innerHTML = `
+                        <div class="collection-color-dot" style="background-color: ${collection.color || '#105bd8'}"></div>
+                        <div class="flex-1">
+                            <div class="filter-label">${collection.name}</div>
+                            ${collection.description ? `<div class="text-xs" style="color: var(--nasa-gray);">${collection.description}</div>` : ''}
+                        </div>
+                        <div class="text-xs" style="color: var(--nasa-gray);">${collection.file_count || 0} workflows</div>
+                    `;
+                    
+                    item.addEventListener('click', function() {
+                        item.classList.toggle('selected');
+                    });
+                    
+                    container.appendChild(item);
+                });
+                
+            } catch (error) {
+                console.error('Error loading collections:', error);
+            }
+        }
+
+        async function createQuickCollection() {
+            const name = document.getElementById('quick-collection-name').value.trim();
+            if (!name) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/collections`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        name: name,
+                        description: '',
+                        color: '#105bd8'
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    alert(error.detail || 'Failed to create collection');
+                    return;
+                }
+                
+                document.getElementById('quick-collection-name').value = '';
+                await loadCollectionPickerList();
+                
+            } catch (error) {
+                console.error('Error creating collection:', error);
+                alert('Failed to create collection');
+            }
+        }
+
+        async function saveCollectionAssignments() {
+            const selectedCollectionIds = Array.from(
+                document.querySelectorAll('.collection-picker-item.selected')
+            ).map(item => item.getAttribute('data-collection-id'));
+            
+            if (collectionPickerWorkflows.length === 0) {
+                closeCollectionPicker();
+                return;
+            }
+            
+            try {
+                // Assign collections to each workflow
+                for (const workflowId of collectionPickerWorkflows) {
+                    const response = await fetch(`${API_BASE}/workflows/${workflowId}/collections`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ collection_ids: selectedCollectionIds })
+                    });
+                    
+                    if (!response.ok) {
+                        console.error(`Failed to update workflow ${workflowId}`);
+                    }
+                }
+                
+                closeCollectionPicker();
+                clearSelection();
+                toggleBulkSelectMode(); // Exit bulk mode
+                
+                // Reload workflows to show updated collections
+                resetAndReload();
+                
+                alert('Collections updated successfully!');
+                
+            } catch (error) {
+                console.error('Error saving collection assignments:', error);
+                alert('Failed to update collections');
+            }
+        }
+
+        // Collections Management Functions
+        async function loadCollections() {
+            try {
+                const response = await fetch(`${API_BASE}/collections`);
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                allCollections = data.collections || [];
+                
+                // Populate custom collection filter dropdown
+                const collectionMenu = document.getElementById('collection-filter-menu');
+                if (collectionMenu) {
+                    // Clear existing options (except "All Collections")
+                    const allOption = collectionMenu.querySelector('[data-value=""]');
+                    collectionMenu.innerHTML = '';
+                    if (allOption) {
+                        collectionMenu.appendChild(allOption);
+                    } else {
+                        addDropdownOption('collection-filter-menu', '', 'All Collections', true);
+                    }
+                    
+                    // Add collection options
+                    allCollections.forEach(collection => {
+                        addDropdownOption('collection-filter-menu', collection.name, collection.name.toUpperCase());
+                    });
+                }
+                
+            } catch (error) {
+                console.error('Error loading collections:', error);
+            }
+        }
+
+        function openCollectionsModal() {
+            document.getElementById('collections-modal').classList.remove('hidden');
+            loadCollectionsForModal();
+        }
+
+        function closeCollectionsModal() {
+            document.getElementById('collections-modal').classList.add('hidden');
+            // Reset form
+            document.getElementById('new-collection-name').value = '';
+            document.getElementById('new-collection-description').value = '';
+            document.getElementById('new-collection-color').value = '#105bd8';
+        }
+
+        async function loadCollectionsForModal() {
+            try {
+                const response = await fetch(`${API_BASE}/collections`);
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                const collections = data.collections || [];
+                
+                const container = document.getElementById('collections-list');
+                container.innerHTML = '';
+                
+                if (collections.length === 0) {
+                    container.innerHTML = '<p class="text-gray-500 text-center py-4">No collections yet. Create your first collection above.</p>';
+                    return;
+                }
+                
+                collections.forEach(collection => {
+                    const item = document.createElement('div');
+                    item.className = 'flex items-center justify-between p-3 border border-gray-200 rounded';
+                    item.innerHTML = `
+                        <div class="flex items-center space-x-3">
+                            <div class="w-4 h-4 rounded" style="background-color: ${collection.color || '#105bd8'}"></div>
+                            <div>
+                                <div class="font-medium">${escapeHtml(collection.name)}</div>
+                                <div class="text-sm text-gray-500">${collection.file_count || 0} workflows</div>
+                                ${collection.description ? `<div class="text-xs text-gray-400">${escapeHtml(collection.description)}</div>` : ''}
+                            </div>
+                        </div>
+                        <button onclick="deleteCollection('${collection.id}', '${escapeHtml(collection.name)}')" 
+                                class="btn-danger text-xs">
+                            Delete
+                        </button>
+                    `;
+                    container.appendChild(item);
+                });
+                
+            } catch (error) {
+                console.error('Error loading collections for modal:', error);
+            }
+        }
+
+        async function createCollection() {
+            const name = document.getElementById('new-collection-name').value.trim();
+            const description = document.getElementById('new-collection-description').value.trim();
+            const color = document.getElementById('new-collection-color').value;
+            
+            if (!name) {
+                alert('Please enter a collection name');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/collections`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name, description, color })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    alert(error.detail || 'Failed to create collection');
+                    return;
+                }
+                
+                // Reset form
+                document.getElementById('new-collection-name').value = '';
+                document.getElementById('new-collection-description').value = '';
+                document.getElementById('new-collection-color').value = '#105bd8';
+                
+                // Reload collections
+                await loadCollections();
+                await loadCollectionsForModal();
+                
+                alert('Collection created successfully!');
+                
+            } catch (error) {
+                console.error('Error creating collection:', error);
+                alert('Failed to create collection');
+            }
+        }
+
+        async function deleteCollection(collectionId, collectionName) {
+            if (!confirm(`Are you sure you want to delete the collection "${collectionName}"? This will remove it from all workflows.`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/collections/${collectionId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    alert(error.detail || 'Failed to delete collection');
+                    return;
+                }
+                
+                // Reload collections
+                await loadCollections();
+                await loadCollectionsForModal();
+                
+                alert('Collection deleted successfully!');
+                
+            } catch (error) {
+                console.error('Error deleting collection:', error);
+                alert('Failed to delete collection');
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
         
     </script>
 </body>

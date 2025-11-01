@@ -298,8 +298,9 @@ class WorkflowFileManager:
             auto_tags.append('moderate')
         
         # Store auto-generated tags in a field or as actual tags
-        if auto_tags:
-            workflow_file.style_tags = auto_tags
+        # DISABLED: Auto-tagging can create tag clutter
+        # if auto_tags:
+        #     workflow_file.style_tags = auto_tags
     
     def _extract_models_from_workflow(self, workflow_data: Dict) -> Dict[str, List[str]]:
         """Extract model references from workflow (similar to workflow_catalog.py)."""

@@ -791,17 +791,17 @@ def store_workflow_in_database(workflow_manager: WorkflowFileManager,
         analysis = analyze_workflow(workflow_data.workflow)
         models_info = analysis.get('models', {})
         
-        # Auto-generate tags from models
-        auto_tags = []
-        if models_info.get('checkpoints'):
-            auto_tags.extend(f"checkpoint:{model}" for model in models_info['checkpoints'])
-        if models_info.get('loras'):
-            auto_tags.extend(f"lora:{model}" for model in models_info['loras'])
-        if models_info.get('embeddings'):
-            auto_tags.extend(f"embedding:{model}" for model in models_info['embeddings'])
+        # Auto-generate tags from models - DISABLED to avoid tag clutter
+        # auto_tags = []
+        # if models_info.get('checkpoints'):
+        #     auto_tags.extend(f"checkpoint:{model}" for model in models_info['checkpoints'])
+        # if models_info.get('loras'):
+        #     auto_tags.extend(f"lora:{model}" for model in models_info['loras'])
+        # if models_info.get('embeddings'):
+        #     auto_tags.extend(f"embedding:{model}" for model in models_info['embeddings'])
         
-        # Combine provided tags with auto-generated ones
-        all_tags = (tags or []) + auto_tags
+        # Use only provided tags
+        all_tags = tags or []
         
         # Add default collection if none provided
         if not collections:
