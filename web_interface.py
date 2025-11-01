@@ -5015,9 +5015,39 @@ async def catalog_page():
                 const count = selectedWorkflows.size;
                 const plural = count === 1 ? 'workflow' : 'workflows';
                 
-                if (!confirm(`Remove ${count} ${plural} from the database?\\n\\nThis will delete the catalog entries but preserve all original files.`)) {
-                    return;
+                // Show bespoke confirmation dialog
+                showBulkRemoveConfirmation(count, plural);
+            }
+
+            function showBulkRemoveConfirmation(count, plural) {
+                const modal = document.createElement('div');
+                modal.className = 'fixed inset-0 z-50 flex items-center justify-center';
+                modal.style.background = 'rgba(0, 0, 0, 0.8)';
+                
+                modal.innerHTML = `
+                    <div class="neo-brutalist-card p-6 max-w-md mx-4" style="background: var(--nasa-white); border: 3px solid var(--nasa-dark);">
+                        <div class="text-lg font-bold mb-4 uppercase" style="color: var(--nasa-dark);">REMOVE ${count} ${plural.toUpperCase()}?</div>
+                        <div class="mb-4 text-sm" style="color: var(--nasa-gray);">This will delete the catalog entries but preserve all original files.</div>
+                        <div class="flex gap-3">
+                            <button onclick="confirmBulkRemove()" class="btn-danger flex-1">REMOVE</button>
+                            <button onclick="cancelBulkRemove()" class="btn-secondary flex-1">CANCEL</button>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.appendChild(modal);
+                window.currentBulkRemoveModal = modal;
+            }
+
+            function cancelBulkRemove() {
+                if (window.currentBulkRemoveModal) {
+                    document.body.removeChild(window.currentBulkRemoveModal);
+                    window.currentBulkRemoveModal = null;
                 }
+            }
+
+            async function confirmBulkRemove() {
+                cancelBulkRemove();
                 
                 const workflowIds = Array.from(selectedWorkflows);
                 let successCount = 0;
@@ -5132,16 +5162,20 @@ async def catalog_page():
                     
                     if (!response.ok) {
                         const error = await response.json();
-                        alert(error.detail || 'Failed to create collection');
+                        showToast('Failed to create collection: ' + (error.detail || 'Unknown error'), 'error');
                         return;
                     }
                     
                     document.getElementById('quick-collection-name').value = '';
                     await loadCollectionPickerList();
                     
+                    // Also reload the main collections dropdown and the collection filter
+                    await loadCollections();
+                    showToast('Collection created successfully!', 'success');
+                    
                 } catch (error) {
                     console.error('Error creating collection:', error);
-                    alert('Failed to create collection');
+                    showToast('Failed to create collection: Network error', 'error');
                 }
             }
 
@@ -5155,18 +5189,37 @@ async def catalog_page():
                     return;
                 }
                 
+                if (selectedCollectionIds.length === 0) {
+                    showToast('Please select at least one collection', 'error');
+                    return;
+                }
+                
                 try {
+                    let successCount = 0;
+                    let failedCount = 0;
+                    
                     // Assign collections to each workflow
                     for (const workflowId of collectionPickerWorkflows) {
+                        console.log(`Assigning collections ${selectedCollectionIds} to workflow ${workflowId}`);
+                        
                         const response = await fetch(`${API_BASE}/workflows/${workflowId}/collections`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ collection_ids: selectedCollectionIds })
                         });
                         
-                        if (!response.ok) {
-                            console.error(`Failed to update workflow ${workflowId}`);
+                        if (response.ok) {
+                            successCount++;
+                        } else {
+                            failedCount++;
+                            const errorData = await response.json();
+                            console.error(`Failed to update workflow ${workflowId}:`, errorData);
                         }
+                    }
+                    
+                    if (failedCount > 0) {
+                        showToast(`Updated ${successCount} workflows, failed ${failedCount}`, 'error');
+                        return;
                     }
                     
                     closeCollectionPicker();
@@ -5176,11 +5229,11 @@ async def catalog_page():
                     // Reload workflows to show updated collections
                     resetAndReload();
                     
-                    alert('Collections updated successfully!');
+                    showToast('Collections updated successfully!', 'success');
                     
                 } catch (error) {
                     console.error('Error saving collection assignments:', error);
-                    alert('Failed to update collections');
+                    showToast('Failed to update collections: ' + error.message, 'error');
                 }
             }
 
