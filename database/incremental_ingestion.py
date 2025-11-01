@@ -280,6 +280,7 @@ class IncrementalIngestionManager:
             # Update file size and hash
             stat = file_path.stat()
             existing.file_size = stat.st_size
+            existing.file_modified_at = datetime.fromtimestamp(stat.st_mtime)
             existing.file_hash = self._calculate_file_hash(file_path)
             
             # Update search index

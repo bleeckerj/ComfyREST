@@ -182,11 +182,13 @@ class WorkflowFileManager:
             workflow_analysis = self._analyze_workflow(workflow_data)
             
             # Create WorkflowFile instance (always use absolute paths)
+            stat = file_path.stat() if file_path.exists() else None
             workflow_file = WorkflowFile(
                 file_path=str(file_path.resolve()),
                 filename=file_path.name,
                 file_hash=file_hash,
-                file_size=file_path.stat().st_size if file_path.exists() else 0,
+                file_size=stat.st_size if stat else 0,
+                file_modified_at=datetime.fromtimestamp(stat.st_mtime) if stat else None,
                 workflow_data=workflow_data,
                 node_count=workflow_analysis.get('node_count', 0),
                 connection_count=workflow_analysis.get('connection_count', 0),

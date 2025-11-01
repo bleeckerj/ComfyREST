@@ -97,7 +97,7 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between items-center py-4">
                 <div class="flex items-center space-x-4">
-                    <a href="/catalogs/database_catalog.html" class="text-blue-600 hover:text-blue-800 font-medium">← Back to Catalog</a>
+                    <a href="/catalog" class="text-blue-600 hover:text-blue-800 font-medium">← Back to Catalog</a>
                     <h1 class="text-2xl font-bold text-gray-900">💡 {html_escape.escape(workflow.filename or "Unknown Workflow")}</h1>
                 </div>
                 <div class="flex items-center space-x-4">
@@ -129,7 +129,7 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
                         </div>
                         <div class="flex justify-between">
                             <span class="font-medium text-gray-700">File Date:</span>
-                            <span class="text-gray-900">TODO: Get from file system</span>
+                            <span class="text-gray-900">{workflow.file_modified_at.strftime("%Y-%m-%d %H:%M") if workflow.file_modified_at else "Unknown"}</span>
                         </div>
                         <div class="flex justify-between">
                             <span class="font-medium text-gray-700">Ingested:</span>
@@ -1107,7 +1107,8 @@ async def get_workflows(
                 WorkflowFile.image_height,
                 WorkflowFile.notes,
                 WorkflowFile.created_at,
-                WorkflowFile.updated_at
+                WorkflowFile.updated_at,
+                WorkflowFile.file_modified_at
             )
             
             # Apply search filter (simplified - no joins for now)
@@ -1230,7 +1231,7 @@ async def get_workflows(
                     "name": row.filename,  # Use filename as name
                     "filename": row.filename,
                     "description": row.notes or "",  # Use notes as description
-                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "created_at": row.file_modified_at.isoformat() if row.file_modified_at else (row.created_at.isoformat() if row.created_at else None),
                     "updated_at": row.updated_at.isoformat() if row.updated_at else None,
                     "file_size": row.file_size,
                     "checksum": row.file_hash,  # Use file_hash as checksum
@@ -1243,6 +1244,7 @@ async def get_workflows(
                     "collections": [],  # Temporarily disabled - would require separate query
                     "clients": [],  # Temporarily disabled until schema sync fixed
                     "projects": [],  # Temporarily disabled until schema sync fixed
+                    "file_path": row.file_path,  # Add the missing file path field
                     "thumbnail_path": f"/api/workflows/{row.id}/thumbnail" if has_image else None
                 }
                 results.append(workflow_data)
@@ -1296,7 +1298,7 @@ async def get_workflow_detail(workflow_id: str):
                 "name": workflow.filename,  # Use filename as name
                 "filename": workflow.filename,
                 "description": workflow.notes or "",  # Use notes as description
-                "created_at": workflow.created_at.isoformat() if workflow.created_at else None,
+                "created_at": workflow.file_modified_at.isoformat() if workflow.file_modified_at else (workflow.created_at.isoformat() if workflow.created_at else None),
                 "updated_at": workflow.updated_at.isoformat() if workflow.updated_at else None,
                 "file_size": workflow.file_size,
                 "checksum": workflow.file_hash,  # Use file_hash as checksum
@@ -1661,6 +1663,84 @@ async def get_workflow_thumbnail(workflow_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/fonts/{font_file}")
+async def get_font(font_file: str):
+    """Serve font files for offline embedding."""
+    import os
+    from fastapi.responses import FileResponse
+    
+    # Security: only allow specific font files
+    allowed_fonts = [
+        "3270NerdFontMono-Regular.woff2",
+        "3270NerdFontMono-Condensed.woff2", 
+        "3270NerdFontMono-SemiCondensed.woff2",
+        "3270NerdFont-Regular.woff2",
+        "3270NerdFont-Condensed.woff2",
+        "3270NerdFont-SemiCondensed.woff2",
+        "3270NerdFontPropo-Regular.woff2",
+        "3270NerdFontPropo-Condensed.woff2",
+        "3270NerdFontPropo-SemiCondensed.woff2"
+    ]
+    
+    if font_file not in allowed_fonts:
+        raise HTTPException(status_code=404, detail="Font not found")
+    
+    font_path = os.path.join("fonts", "3270", font_file)
+    if not os.path.exists(font_path):
+        raise HTTPException(status_code=404, detail="Font file not found")
+    
+    return FileResponse(
+        font_path, 
+        media_type="font/woff2",
+        headers={
+            "Cache-Control": "public, max-age=31536000",  # Cache for 1 year
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
+
+
+@app.post("/api/open-file-location")
+async def open_file_location(request: dict):
+    """Open file location in system file manager."""
+    import subprocess
+    import platform
+    import os
+    from pathlib import Path
+    
+    file_path = request.get("file_path")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="No file path provided")
+    
+    # Security check: ensure file exists and is accessible
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        system = platform.system()
+        
+        if system == "Darwin":  # macOS
+            # Open in Finder and select the file
+            subprocess.run(["open", "-R", file_path], check=True)
+        elif system == "Windows":
+            # Open in Explorer and select the file  
+            subprocess.run(["explorer", "/select,", file_path], check=True)
+        elif system == "Linux":
+            # Open directory in default file manager
+            directory = os.path.dirname(file_path)
+            subprocess.run(["xdg-open", directory], check=True)
+        else:
+            raise HTTPException(status_code=501, detail="Platform not supported")
+            
+        return {"success": True, "message": "File location opened"}
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to open file location: {e}")
+        raise HTTPException(status_code=500, detail="Failed to open file location")
+    except Exception as e:
+        logger.error(f"Error opening file location: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/tags")
 async def get_tags():
     """Get all available tags."""
@@ -1755,64 +1835,293 @@ async def catalog_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>ComfyUI Workflow Light Table</title>
+        <title>COMFYUI LIGHT TABLE</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <style>
+            @font-face {
+                font-family: '3270 Nerd Font Mono';
+                src: url('/fonts/3270NerdFontMono-Regular.woff2') format('woff2');
+                font-weight: 400;
+                font-style: normal;
+                font-display: swap;
+            }
+            
+            :root {
+                --nasa-blue: #105bd8;
+                --nasa-gray: #aeb0b5;
+                --nasa-white: #ffffff;
+                --nasa-dark: #212121;
+                --nasa-orange: #ff9d1e;
+            }
+            
+            * {
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+            }
+            
+            body {
+                background: var(--nasa-white);
+                color: var(--nasa-dark);
+                font-weight: 400;
+            }
+            
+            .neo-brutalist-card {
+                background: var(--nasa-white);
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
+                display: flex;
+                flex-direction: column;
+                height: 100%;
+            }
+            
+            .card-flex-container {
+                display: flex;
+                flex-direction: column;
+                height: 100%;
+            }
+            
+            .card-content {
+                flex-grow: 1;
+                display: flex;
+                flex-direction: column;
+            }
+            
+            .card-buttons {
+                margin-top: auto;
+            }
+            
             .workflow-grid {
                 display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-                gap: 1.5rem;
+                grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+                gap: 2rem;
                 padding: 0;
             }
-            .workflow-card {
-                transition: all 0.3s ease;
-                width: 100%;
+            
+            .btn-primary {
+                background: var(--nasa-blue);
+                color: var(--nasa-white);
+                border: 1px solid var(--nasa-blue);
+                font-weight: 400;
+                padding: 0.5rem 1rem;
+                border-radius: 2px;
+                cursor: pointer;
+                transition: transform 0.1s ease;
             }
-            .workflow-card:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            
+            .btn-primary:hover {
+                transform: translateY(1px);
             }
-            .tag {
-                display: inline-block;
+            
+            .btn-secondary {
+                background: transparent;
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                font-weight: 400;
+                padding: 0.5rem 1rem;
+                border-radius: 2px;
+                cursor: pointer;
+                transition: transform 0.1s ease;
+            }
+            
+            .btn-secondary:hover {
+                background: var(--nasa-gray);
+                color: var(--nasa-white);
+                transform: translateY(1px);
+            }
+            
+            .btn-danger {
+                background: transparent;
+                color: var(--nasa-orange);
+                border: 1px solid var(--nasa-orange);
+                font-weight: 400;
                 padding: 0.25rem 0.5rem;
-                margin: 0.125rem;
-                background: #e5e7eb;
-                border-radius: 0.375rem;
-                font-size: 0.75rem;
-                font-weight: 500;
-                color: #374151;
+                border-radius: 2px;
+                cursor: pointer;
+                transition: transform 0.1s ease;
             }
-            .checkpoint-tag { background: #dbeafe; color: #1e40af; }
-            .lora-tag { background: #fef3c7; color: #92400e; }
-            .node-tag { background: #f3e8ff; color: #7c3aed; }
+            
+            .btn-danger:hover {
+                background: var(--nasa-orange);
+                color: var(--nasa-white);
+                transform: translateY(1px);
+            }
+            
+            .mission-header {
+                background: var(--nasa-white);
+                border-bottom: 1px solid var(--nasa-gray);
+                color: var(--nasa-dark);
+            }
+            
+            .mission-title {
+                font-weight: 500;
+                font-size: 2rem;
+                color: var(--nasa-dark);
+            }
+            
+            .status-badge {
+                background: transparent;
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                font-weight: 400;
+                padding: 0.5rem 1rem;
+                border-radius: 2px;
+            }
+            
+            .filter-section {
+                background: var(--nasa-white);
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
+            }
+            
+            .input-field {
+                background: var(--nasa-white);
+                border: 1px solid var(--nasa-dark);
+                color: var(--nasa-dark);
+                font-weight: 500;
+                padding: 0.5rem;
+                border-radius: 2px;
+            }
+            
+            .input-field:focus {
+                outline: none;
+                border-color: var(--nasa-blue);
+            }
+            
+            .tag-checkpoint {
+                background: transparent;
+                color: var(--nasa-blue);
+                border: 1px solid var(--nasa-blue);
+                font-weight: 400;
+                padding: 0.2rem 0.4rem;
+                border-radius: 2px;
+                font-size: 0.65rem;
+            }
+            
+            .tag-lora {
+                background: transparent;
+                color: var(--nasa-orange);
+                border: 1px solid var(--nasa-orange);
+                font-weight: 400;
+                padding: 0.2rem 0.4rem;
+                border-radius: 2px;
+                font-size: 0.65rem;
+            }
+            
+            .tag-custom {
+                background: transparent;
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                font-weight: 400;
+                padding: 0.2rem 0.4rem;
+                font-size: 0.65rem;
+                border-radius: 2px;
+            }
+            
             .thumbnail {
                 width: 100%;
-                height: 200px;
+                height: 220px;
                 object-fit: cover;
-                border-radius: 0.5rem;
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
             }
+            
             .no-thumbnail {
                 width: 100%;
-                height: 200px;
-                background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
-                border-radius: 0.5rem;
+                height: 220px;
+                background: #f8f9fa;
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 font-size: 3rem;
-                color: #9ca3af;
+                color: var(--nasa-gray);
+                font-weight: 400;
+            }
+            
+            .loading-indicator {
+                border: 2px solid var(--nasa-gray);
+                border-top: 2px solid var(--nasa-blue);
+                border-radius: 50%;
+                width: 2rem;
+                height: 2rem;
+                animation: spin 1s linear infinite;
+            }
+            
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            
+            .mission-stats {
+                font-weight: 400;
+                color: var(--nasa-dark);
+            }
+            
+            .confirmation-dialog {
+                background: var(--nasa-white);
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                border-radius: 2px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            }
+            
+            .file-path-container {
+                margin-top: 4px;
+                display: flex;
+                align-items: flex-start;
+                gap: 8px;
+            }
+            
+            .file-path-buttons {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                width: 20%;
+                flex-shrink: 0;
+            }
+            
+            .file-path-text {
+                width: 80%;
+                flex-grow: 1;
+            }
+            
+            .file-path {
+                font-size: 10px;
+                color: var(--nasa-gray);
+                font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+                word-break: break-all;
+                line-height: 1.2;
+            }
+            
+            .btn-path {
+                background: transparent;
+                color: var(--nasa-dark);
+                border: 1px solid var(--nasa-dark);
+                font-weight: 400;
+                padding: 0.25rem 0.5rem;
+                border-radius: 2px;
+                cursor: pointer;
+                font-size: 0.45rem;
+                transition: all 0.1s;
+            }
+            
+            .btn-path:hover {
+                background: var(--nasa-gray);
+                color: var(--nasa-white);
+                transform: translateY(1px);
             }
         </style>
     </head>
-    <body class="bg-gray-50 min-h-screen">
+    <body>
         <!-- Header -->
-        <header class="bg-white shadow-sm border-b">
+        <header class="mission-header">
             <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                 <div class="flex justify-between items-center py-4">
                     <div class="flex items-center space-x-4">
                         <h1 class="text-3xl font-bold text-gray-900">� ComfyUI Workflow Light Table</h1>
-                        <span id="workflow-count" class="bg-blue-100 text-blue-800 text-sm font-medium px-2.5 py-0.5 rounded">
-                            Loading...
+                        <span id="workflow-count" class="status-badge">
+                            LOADING...
                         </span>
                     </div>
                     <div class="flex items-center space-x-4">
@@ -1864,31 +2173,31 @@ async def catalog_page():
             </div>
         </header>
 
-        <!-- Main Content -->
-        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Mission Operations -->
+        <main class="max-w-7xl mx-auto px-6 py-8">
             <!-- Loading State -->
             <div id="loading" class="text-center py-12">
-                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                <p class="mt-2 text-gray-600">Loading workflows...</p>
+                <div class="loading-indicator mx-auto mb-4"></div>
+                <p class="text-white font-bold uppercase tracking-wider">INITIALIZING WORKFLOW DATA...</p>
             </div>
             
             <!-- Error State -->
             <div id="error" class="hidden text-center py-12">
-                <div class="text-red-500 text-6xl mb-4">⚠️</div>
-                <h2 class="text-xl font-semibold text-gray-900 mb-2">Error Loading Workflows</h2>
-                <p id="error-message" class="text-gray-600 mb-4"></p>
-                <button onclick="loadWorkflows()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
-                    Try Again
+                <div class="text-6xl mb-6" style="color: var(--nasa-orange);">⚠️</div>
+                <h2 class="text-2xl font-bold text-white mb-4 uppercase tracking-wider">CRITICAL ERROR</h2>
+                <p id="error-message" class="text-white mb-6 font-mono"></p>
+                <button onclick="loadWorkflows()" class="btn-danger">
+                    RETRY INGESTION
                 </button>
             </div>
             
             <!-- Empty State -->
             <div id="empty" class="hidden text-center py-12">
-                <div class="text-gray-400 text-6xl mb-4">📁</div>
-                <h2 class="text-xl font-semibold text-gray-900 mb-2">No Workflows Found</h2>
-                <p class="text-gray-600 mb-4">Try adjusting your filters or upload some workflows to get started.</p>
-                <a href="/" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
-                    Upload Workflows
+                <div class="text-6xl mb-6" style="color: var(--nasa-gray);">�</div>
+                <h2 class="text-2xl font-medium text-white mb-4">No workflows found</h2>
+                <p class="text-white mb-6 font-mono">ADJUST WORKFLOW PARAMETERS OR UPLOAD NEW WORKFLOWS</p>
+                <a href="/" class="btn-primary">
+                    Upload Workflow
                 </a>
             </div>
             
@@ -1899,8 +2208,8 @@ async def catalog_page():
             
             <!-- Load More -->
             <div id="load-more-container" class="hidden text-center mt-8">
-                <button id="load-more" class="bg-gray-500 text-white px-6 py-2 rounded hover:bg-gray-600 transition-colors">
-                    Load More Workflows
+                <button id="load-more" class="btn-secondary">
+                    Load More
                 </button>
             </div>
         </main>
@@ -1982,6 +2291,89 @@ async def catalog_page():
                 });
             }
 
+            function copyToClipboard(text) {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(() => {
+                        // Show brief success indication
+                        const toast = document.createElement('div');
+                        toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-blue);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                        toast.textContent = 'Path copied to clipboard';
+                        document.body.appendChild(toast);
+                        setTimeout(() => document.body.removeChild(toast), 2000);
+                    }).catch(() => {
+                        fallbackCopyPath(text);
+                    });
+                } else {
+                    fallbackCopyPath(text);
+                }
+            }
+
+            function fallbackCopyPath(text) {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                const toast = document.createElement('div');
+                toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-blue);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                toast.textContent = 'Path copied to clipboard';
+                document.body.appendChild(toast);
+                setTimeout(() => document.body.removeChild(toast), 2000);
+            }
+
+            function openFileLocation(filePath) {
+                if (!filePath) {
+                    const toast = document.createElement('div');
+                    toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-orange);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                    toast.textContent = 'No file path available';
+                    document.body.appendChild(toast);
+                    setTimeout(() => document.body.removeChild(toast), 2000);
+                    return;
+                }
+
+                // Try different methods based on platform/browser
+                if (navigator.platform.indexOf('Mac') !== -1) {
+                    // macOS - try to open in Finder
+                    fetch('/api/open-file-location', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ file_path: filePath })
+                    }).then(response => {
+                        if (response.ok) {
+                            const toast = document.createElement('div');
+                            toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-blue);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                            toast.textContent = 'Opening file location...';
+                            document.body.appendChild(toast);
+                            setTimeout(() => document.body.removeChild(toast), 2000);
+                        } else {
+                            throw new Error('Failed to open file location');
+                        }
+                    }).catch(error => {
+                        // Fallback: copy path to clipboard
+                        copyToClipboard(filePath);
+                        const toast = document.createElement('div');
+                        toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-orange);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                        toast.textContent = 'Could not open location, path copied instead';
+                        document.body.appendChild(toast);
+                        setTimeout(() => document.body.removeChild(toast), 3000);
+                    });
+                } else {
+                    // For other platforms, just copy to clipboard for now
+                    copyToClipboard(filePath);
+                    const toast = document.createElement('div');
+                    toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-blue);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                    toast.textContent = 'File path copied to clipboard';
+                    document.body.appendChild(toast);
+                    setTimeout(() => document.body.removeChild(toast), 2000);
+                }
+            }
+
             async function loadFilters() {
                 try {
                     const response = await fetch(`${API_BASE}/workflows?limit=1000`);
@@ -2014,33 +2406,33 @@ async def catalog_page():
                     // Populate checkpoints
                     allCheckpoints = Array.from(checkpointSet).sort();
                     const checkpointSelect = document.getElementById('checkpoint-filter');
-                    checkpointSelect.innerHTML = '<option value="">All Checkpoints</option>';
+                    checkpointSelect.innerHTML = '<option value="">ALL CHECKPOINTS</option>';
                     allCheckpoints.forEach(checkpoint => {
                         const option = document.createElement('option');
                         option.value = checkpoint;
-                        option.textContent = checkpoint;
+                        option.textContent = checkpoint.toUpperCase();
                         checkpointSelect.appendChild(option);
                     });
 
                     // Populate LoRAs
                     allLoras = Array.from(loraSet).sort();
                     const loraSelect = document.getElementById('lora-filter');
-                    loraSelect.innerHTML = '<option value="">All LoRAs</option>';
+                    loraSelect.innerHTML = '<option value="">ALL LORAS</option>';
                     allLoras.forEach(lora => {
                         const option = document.createElement('option');
                         option.value = lora;
-                        option.textContent = lora;
+                        option.textContent = lora.toUpperCase();
                         loraSelect.appendChild(option);
                     });
 
                     // Populate node types
                     allNodeTypes = Array.from(nodeTypeSet).sort();
                     const nodeTypeSelect = document.getElementById('node-type-filter');
-                    nodeTypeSelect.innerHTML = '<option value="">All Node Types</option>';
+                    nodeTypeSelect.innerHTML = '<option value="">ALL NODE TYPES</option>';
                     allNodeTypes.forEach(nodeType => {
                         const option = document.createElement('option');
                         option.value = nodeType;
-                        option.textContent = nodeType;
+                        option.textContent = nodeType.toUpperCase();
                         nodeTypeSelect.appendChild(option);
                     });
 
@@ -2147,28 +2539,28 @@ async def catalog_page():
 
             function createWorkflowCard(workflow) {
                 const div = document.createElement('div');
-                div.className = 'workflow-card bg-white rounded-lg shadow-md overflow-hidden';
+                div.className = 'neo-brutalist-card';
                 
-                const createdAt = workflow.created_at ? new Date(workflow.created_at).toLocaleDateString() : 'Unknown';
+                const createdAt = workflow.created_at ? new Date(workflow.created_at).toLocaleDateString() : 'UNKNOWN';
                 
                 // Separate tags by type
                 const checkpointTags = workflow.tags.filter(tag => tag.startsWith('checkpoint:')).map(tag => tag.substring(11));
                 const loraTags = workflow.tags.filter(tag => tag.startsWith('lora:')).map(tag => tag.substring(5));
                 const otherTags = workflow.tags.filter(tag => !tag.startsWith('checkpoint:') && !tag.startsWith('lora:'));
                 
-                const checkpointTagsHtml = checkpointTags.map(tag => `<span class="tag checkpoint-tag">📁 ${tag}</span>`).join('');
-                const loraTagsHtml = loraTags.map(tag => `<span class="tag lora-tag">🎯 ${tag}</span>`).join('');
+                const checkpointTagsHtml = checkpointTags.map(tag => `<span class="tag-checkpoint">CHECKPOINT: ${tag.toUpperCase()}</span>`).join('');
+                const loraTagsHtml = loraTags.map(tag => `<span class="tag-lora">LORA: ${tag.toUpperCase()}</span>`).join('');
                 const otherTagsHtml = otherTags.map(tag => 
                     `<span class="tag-item-wrapper-catalog relative inline-block">
-                        <span class="tag tag-editable bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs flex items-center gap-1 group" style="display: inline-flex;">
-                            <span class="tag-text">🏷️ ${tag}</span>
-                            <button onclick="showDeleteConfirmCatalog(this, '${tag}', '${workflow.id}')" class="text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity ml-1" title="Delete tag">×</button>
+                        <span class="tag-custom group" style="display: inline-flex; align-items: center; gap: 4px;">
+                            <span class="tag-text">${tag.toUpperCase()}</span>
+                            <button onclick="showDeleteConfirmCatalog(this, '${tag}', '${workflow.id}')" class="btn-danger opacity-0 group-hover:opacity-100 transition-opacity text-xs px-1 py-0" title="Delete tag">×</button>
                         </span>
-                        <div class="delete-confirm hidden absolute top-full left-0 mt-1 bg-white border border-red-300 rounded-md shadow-lg p-2 z-50 whitespace-nowrap">
-                            <div class="text-xs text-gray-700 mb-2">Delete "${tag}"?</div>
-                            <div class="flex gap-1">
-                                <button onclick="confirmDeleteCatalog(this, '${tag}', '${workflow.id}')" class="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600">Delete</button>
-                                <button onclick="cancelDeleteCatalog(this)" class="bg-gray-300 text-gray-700 px-2 py-1 rounded text-xs hover:bg-gray-400">Cancel</button>
+                        <div class="delete-confirm confirmation-dialog hidden absolute top-full left-0 mt-2 p-3 z-50 whitespace-nowrap">
+                            <div class="text-xs font-bold mb-2 uppercase">DELETE "${tag.toUpperCase()}"?</div>
+                            <div class="flex gap-2">
+                                <button onclick="confirmDeleteCatalog(this, '${tag}', '${workflow.id}')" class="btn-danger text-xs px-2 py-1">DELETE</button>
+                                <button onclick="cancelDeleteCatalog(this)" class="btn-secondary text-xs px-2 py-1">CANCEL</button>
                             </div>
                         </div>
                     </span>`
@@ -2178,53 +2570,70 @@ async def catalog_page():
                     ${workflow.has_image ? 
                         `<div class="thumbnail-container">
                             <img src="${API_BASE}/workflows/${workflow.id}/thumbnail" alt="${workflow.name}" class="thumbnail" 
-                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                            <div class="no-thumbnail" style="display: none;">🖼️</div>
+                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"
+                                 oncontextmenu="openFileLocation('${workflow.file_path ? workflow.file_path.replace(/'/g, "\\'") : ''}'); return false;"
+                                 title="Right-click to open file location">
+                            <div class="no-thumbnail" style="display: none;">�</div>
                          </div>`
-                        : '<div class="no-thumbnail">📄</div>'
+                        : '<div class="no-thumbnail">�</div>'
                     }
                         
-                    <div class="p-4">
-                        <h3 class="font-semibold text-lg text-gray-900 mb-2">${workflow.name || workflow.filename || 'Untitled'}</h3>
+                    <div class="p-6">
+                        <h3 class="font-bold text-lg uppercase tracking-wider mb-1" style="color: var(--nasa-dark);">${(workflow.name || workflow.filename || 'UNTITLED WORKFLOW').toUpperCase()}</h3>
                         
-                        ${workflow.description ? 
-                            `<p class="text-gray-600 text-sm mb-3">${workflow.description}</p>` 
+                        ${workflow.file_path ? 
+                            `<div class="file-path-container mb-2">
+                                <div class="file-path-buttons">
+                                    <button onclick="copyToClipboard('${workflow.file_path.replace(/'/g, "\\'")}')" class="btn-path text-xs px-2 py-1" title="Copy file path">CPY</button>
+                                    <button onclick="openFileLocation('${workflow.file_path.replace(/'/g, "\\'")}')" class="btn-path text-xs px-2 py-1" title="Open file location">GTO</button>
+                                </div>
+                                <div class="file-path-text">
+                                    <div class="file-path text-xs">${workflow.file_path}</div>
+                                </div>
+                            </div>` 
                             : ''
                         }
                         
-                        <div class="flex items-center justify-between text-xs text-gray-500 mb-3">
-                            <span>📊 ${workflow.node_count || 0} nodes</span>
-                            <span>📅 ${createdAt}</span>
+                        ${workflow.description ? 
+                            `<p class="text-sm mb-4 mt-3 font-mono" style="color: var(--nasa-dark);">${workflow.description.toUpperCase()}</p>` 
+                            : '<div class="mb-2"></div>'
+                        }
+                        
+                        <div class="mission-stats flex items-center justify-between text-xs mb-4">
+                            <span>📊 ${workflow.node_count || 0} NODES</span>
+                            <span>📅 ${createdAt.toUpperCase()}</span>
                         </div>
                         
-                        ${checkpointTagsHtml ? `<div class="mb-2">${checkpointTagsHtml}</div>` : ''}
-                        ${loraTagsHtml ? `<div class="mb-2">${loraTagsHtml}</div>` : ''}
+                        ${checkpointTagsHtml ? `<div class="mb-3 flex flex-wrap gap-1">${checkpointTagsHtml}</div>` : ''}
+                        ${loraTagsHtml ? `<div class="mb-3 flex flex-wrap gap-1">${loraTagsHtml}</div>` : ''}
                         
-                        <div class="mb-3">
-                            <div class="flex items-center justify-between mb-1">
-                                <span class="text-xs font-medium text-gray-600">Tags:</span>
-                                <button onclick="showAddTagForm('${workflow.id}')" class="text-green-600 hover:text-green-800 text-xs" title="Add tag">+ Add</button>
+                        <div class="mb-4 flex-grow">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="font-bold text-xs tracking-wide" style="color: var(--nasa-dark);">Tags:</span>
+                                <button onclick="showAddTagForm('${workflow.id}')" class="btn-primary text-xs px-2 py-1" title="Add tag">+ ADD</button>
                             </div>
-                            <div id="tags-container-${workflow.id}" class="flex flex-wrap gap-1 mb-1">
-                                ${otherTagsHtml || '<span class="text-xs text-gray-400">No tags</span>'}
+                            <div id="tags-container-${workflow.id}" class="flex flex-wrap gap-1 mb-2">
+                                ${otherTagsHtml || '<span class="text-xs font-mono" style="color: var(--nasa-gray);">NO TAGS ASSIGNED</span>'}
                             </div>
                             <div id="add-tag-form-${workflow.id}" class="hidden">
-                                <input type="text" id="new-tag-input-${workflow.id}" placeholder="Enter tag..." class="px-2 py-1 text-xs border border-gray-300 rounded mr-1 w-full mb-1">
-                                <div class="flex gap-1">
-                                    <button onclick="saveNewTagCatalog('${workflow.id}')" class="bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600">Save</button>
-                                    <button onclick="cancelAddTagCatalog('${workflow.id}')" class="bg-gray-300 text-gray-700 px-2 py-1 rounded text-xs hover:bg-gray-400">Cancel</button>
+                                <input type="text" id="new-tag-input-${workflow.id}" placeholder="ENTER TAG..." class="input-field w-full mb-2 text-xs">
+                                <div class="flex gap-2">
+                                    <button onclick="saveNewTagCatalog('${workflow.id}')" class="btn-primary text-xs px-3 py-1">SAVE</button>
+                                    <button onclick="cancelAddTagCatalog('${workflow.id}')" class="btn-secondary text-xs px-3 py-1">CANCEL</button>
                                 </div>
                             </div>
                         </div>
-                        
-                        <div class="flex space-x-2">
+                    </div>
+                    
+                    <div class="card-buttons p-6 pt-0">
+                        <div class="flex gap-3">
                             <button onclick="viewWorkflow('${workflow.id}')" 
-                                    class="flex-1 bg-blue-500 text-white px-3 py-2 rounded text-sm hover:bg-blue-600 transition-colors">
-                                👁️ View Details
+                                    class="btn-primary flex-1 text-xs">
+                                WORKFLOW DETAILS
                             </button>
                             <button onclick="downloadWorkflow('${workflow.id}', '${workflow.name || workflow.filename}')" 
-                                    class="flex-1 bg-gray-500 text-white px-3 py-2 rounded text-sm hover:bg-gray-600 transition-colors">
-                                📥 Download
+                                    class="btn-secondary flex-1 text-xs">
+                                DOWNLOAD WORKFLOW
                             </button>
                         </div>
                     </div>

@@ -56,6 +56,7 @@ class WorkflowFile(Base):
     filename = Column(String, index=True)
     file_hash = Column(String, index=True)  # For duplicate detection
     file_size = Column(Integer)
+    file_modified_at = Column(DateTime, index=True)  # Actual file modification time
     
     # Workflow data
     workflow_data = Column(JSON)  # Complete extracted workflow
