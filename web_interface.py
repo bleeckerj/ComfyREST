@@ -86,23 +86,153 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
     <title>Workflow: {html_escape.escape(workflow.filename or "Unknown")}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        .node-card {{ transition: all 0.2s ease-in-out; }}
-        .node-card:hover {{ transform: translateY(-2px); }}
-        .copy-btn {{ font-size: 10px; }}
+        :root {{
+            --nasa-red: #fc3d21;
+            --nasa-blue: #105bd8;
+            --nasa-gray: #aeb0b5;
+            --nasa-white: #ffffff;
+            --nasa-dark: #212121;
+            --nasa-orange: #ff9d1e;
+        }}
+        
+        * {{
+            font-family: '3270 Nerd Font Mono', 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Source Code Pro', 'Menlo', 'Consolas', monospace;
+        }}
+        
+        body {{
+            background: var(--nasa-white);
+            color: var(--nasa-dark);
+            font-weight: 400;
+        }}
+        
+        .neo-brutalist-card {{
+            background: var(--nasa-white);
+            color: var(--nasa-dark);
+            border: 1px solid var(--nasa-dark);
+            font-weight: 400;
+            border-radius: 2px;
+        }}
+        
+        .node-card {{ 
+            background: var(--nasa-white);
+            border: 1px solid var(--nasa-dark);
+            border-radius: 2px;
+        }}
+        .copy-btn {{ 
+            font-size: 10px;
+            background: transparent;
+            color: var(--nasa-dark);
+            border: 1px solid var(--nasa-dark);
+            font-weight: 400;
+            padding: 0.2rem 0.4rem;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: all 0.1s ease;
+        }}
+        
+        .copy-btn:hover {{
+            background: var(--nasa-dark);
+            color: var(--nasa-white);
+        }}
+        
+        .copy-btn.shift-hover:hover {{
+            background: var(--nasa-orange);
+            color: var(--nasa-white);
+            border-color: var(--nasa-orange);
+        }}
+        
+        .tag-custom {{
+            background: transparent;
+            color: var(--nasa-dark);
+            border: 1px solid var(--nasa-dark);
+            font-weight: 400;
+            padding: 0.2rem 0.4rem;
+            font-size: 0.65rem;
+            border-radius: 2px;
+        }}
+        
+        .btn-primary {{
+            background: transparent;
+            color: var(--nasa-orange);
+            border: 1px solid var(--nasa-orange);
+            font-weight: 400;
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            border-radius: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+            cursor: pointer;
+            transition: all 0.1s ease;
+        }}
+        
+        .btn-primary:hover {{
+            background: var(--nasa-orange);
+            color: var(--nasa-white);
+            border-color: var(--nasa-orange);
+        }}
+        
+        .btn-secondary {{
+            background: transparent;
+            color: var(--nasa-blue);
+            border: 1px solid var(--nasa-dark);
+            font-weight: 400;
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            border-radius: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+            cursor: pointer;
+            transition: all 0.1s ease;
+        }}
+        
+        .btn-secondary:hover {{
+            background: var(--nasa-blue);
+            color: var(--nasa-white);
+            border-color: var(--nasa-blue);
+        }}
+        
+        .btn-path {{
+            background: transparent;
+            color: var(--nasa-dark);
+            border: 1px solid var(--nasa-dark);
+            font-weight: 400;
+            padding: 0.25rem 0.5rem;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 0.45rem;
+            transition: all 0.1s ease;
+        }}
+        
+        .btn-path:hover {{
+            background: var(--nasa-dark);
+            color: var(--nasa-white);
+            border-color: var(--nasa-dark);
+        }}
+        
+        .filename-truncated {{
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }}
     </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
+<body class="min-h-screen" style="background: var(--nasa-white); color: var(--nasa-dark);">
     <!-- Header -->
-    <header class="bg-white shadow-sm border-b sticky top-0 z-40">
+    <header class="neo-brutalist-card sticky top-0 z-40" style="border-radius: 0; border-left: none; border-right: none; border-top: none;">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex justify-between items-center py-4">
                 <div class="flex items-center space-x-4">
-                    <a href="/catalog" class="text-blue-600 hover:text-blue-800 font-medium">← Back to Catalog</a>
-                    <h1 class="text-2xl font-bold text-gray-900">💡 {html_escape.escape(workflow.filename or "Unknown Workflow")}</h1>
+                    <a href="/catalog" class="btn-secondary" style="text-decoration: none;">← Back to Catalog</a>
+                    <h1 class="text-xl font-bold filename-truncated" style="color: var(--nasa-dark);" title="{html_escape.escape(workflow.filename or 'Unknown Workflow')}">{html_escape.escape(workflow.filename or "Unknown Workflow")}</h1>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="copyToClipboard('{workflow.file_path.replace("'", "\\'")}', this)" class="btn-path" title="Copy file path">CPY</button>
+                        <button onclick="openFileLocation('{workflow.file_path.replace("'", "\\'")}', this)" class="btn-path" title="Open file location">GTO</button>
+                    </div>
                 </div>
                 <div class="flex items-center space-x-4">
-                    {f'<a href="/api/workflows/{workflow.id}/thumbnail" target="_blank" class="bg-green-500 text-white px-4 py-2 rounded text-sm hover:bg-green-600 transition-colors">🖼️ View Image</a>' if has_image else ''}
-                    <a href="/api/workflows/{workflow.id}" class="bg-blue-500 text-white px-4 py-2 rounded text-sm hover:bg-blue-600 transition-colors">📥 Download JSON</a>
+                    {f'<a href="/api/workflows/{workflow.id}/thumbnail" target="_blank" class="btn-primary" style="text-decoration: none;">View Image</a>' if has_image else ''}
+                    <a href="/api/workflows/{workflow.id}" class="btn-secondary" style="text-decoration: none;">Download JSON</a>
                 </div>
             </div>
         </div>
@@ -110,40 +240,41 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
 
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <!-- Workflow Info -->
-        <div class="bg-white rounded-lg shadow-sm border p-6 mb-8">
+        <div class="neo-brutalist-card p-6 mb-8">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                    <h2 class="text-xl font-semibold mb-4">Workflow Information</h2>
+                    <h2 class="text-xl font-semibold mb-4" style="color: var(--nasa-dark);">Workflow Information</h2>
                     <div class="space-y-3">
                         <div class="flex justify-between">
-                            <span class="font-medium text-gray-700">File:</span>
-                            <span class="text-gray-900">{html_escape.escape(workflow.filename or "Unknown")}</span>
+                            <span class="font-medium" style="color: var(--nasa-gray);">File:</span>
+                            <span style="color: var(--nasa-dark);">{html_escape.escape(workflow.filename or "Unknown")}</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="font-medium text-gray-700">Size:</span>
-                            <span class="text-gray-900">{file_size_str}</span>
+                            <span class="font-medium" style="color: var(--nasa-gray);">Size:</span>
+                            <span style="color: var(--nasa-dark);">{file_size_str}</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="font-medium text-gray-700">Nodes:</span>
-                            <span class="text-gray-900">{workflow.node_count or 0}</span>
+                            <span class="font-medium" style="color: var(--nasa-gray);">Nodes:</span>
+                            <span style="color: var(--nasa-dark);">{workflow.node_count or 0}</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="font-medium text-gray-700">File Date:</span>
-                            <span class="text-gray-900">{workflow.file_modified_at.strftime("%Y-%m-%d %H:%M") if workflow.file_modified_at else "Unknown"}</span>
+                            <span class="font-medium" style="color: var(--nasa-gray);">File Date:</span>
+                            <span style="color: var(--nasa-dark);">{workflow.file_modified_at.strftime("%Y-%m-%d %H:%M") if workflow.file_modified_at else "Unknown"}</span>
                         </div>
                         <div class="flex justify-between">
-                            <span class="font-medium text-gray-700">Ingested:</span>
-                            <span class="text-gray-900 text-xs">{workflow.created_at.strftime("%Y-%m-%d %H:%M") if workflow.created_at else "Unknown"}</span>
+                            <span class="font-medium" style="color: var(--nasa-gray);">Ingested:</span>
+                            <span class="text-xs" style="color: var(--nasa-dark);">{workflow.created_at.strftime("%Y-%m-%d %H:%M") if workflow.created_at else "Unknown"}</span>
                         </div>
                     </div>
                     
                     <!-- Editable Description -->
                     <div class="mt-6">
-                        <label class="block font-medium text-gray-700 mb-2">Description:</label>
-                        <textarea id="description" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                        <label class="block font-medium mb-2" style="color: var(--nasa-gray);">Description:</label>
+                        <textarea id="description" class="w-full px-3 py-2 border focus:outline-none" 
+                                  style="border-color: var(--nasa-gray); border-radius: 2px; background: var(--nasa-white); color: var(--nasa-dark);"
                                   rows="3" placeholder="Add a description for this workflow...">{html_escape.escape(workflow.notes or "")}</textarea>
-                        <button onclick="saveDescription()" class="mt-2 bg-blue-500 text-white px-4 py-2 rounded text-sm hover:bg-blue-600 transition-colors">
-                            💾 Save Description
+                        <button onclick="saveDescription()" class="mt-2 btn-secondary" style="text-decoration: none;">
+                            Save Description
                         </button>
                     </div>
                 </div>
@@ -152,100 +283,102 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
                     <!-- Workflow Image -->
                     {f'''
                     <div class="mb-6">
-                        <h3 class="text-lg font-medium mb-3">Workflow Output</h3>
-                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                        <h3 class="text-lg font-medium mb-3" style="color: var(--nasa-dark);">Workflow Output</h3>
+                        <div class="neo-brutalist-card overflow-hidden">
                             <img src="/api/workflows/{workflow.id}/thumbnail" alt="Workflow output" 
-                                 class="w-full h-auto max-h-64 object-contain bg-gray-50"
+                                 class="w-full h-auto max-h-64 object-contain"
+                                 style="background: var(--nasa-white);"
                                  onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                            <div class="text-center text-gray-500 text-sm p-8 hidden">
+                            <div class="text-center text-sm p-8 hidden" style="color: var(--nasa-gray);">
                                 No image available
                             </div>
                         </div>
                     </div>''' if has_image else '''
                     <div class="mb-6">
-                        <div class="border border-gray-200 rounded-lg p-8 text-center text-gray-500">
-                            <span class="text-4xl">🖼️</span>
+                        <div class="neo-brutalist-card p-8 text-center" style="color: var(--nasa-gray);">
+                            <span class="text-4xl" style="color: var(--nasa-gray);">[IMG]</span>
                             <p class="text-sm mt-2">No image available</p>
                         </div>
                     </div>'''}
                     
                     <!-- RUN WORKFLOW Button -->
                     <div class="mb-6">
-                        <button onclick="runWorkflow()" class="w-full bg-green-600 text-white px-6 py-3 rounded-lg font-medium hover:bg-green-700 transition-colors flex items-center justify-center gap-2">
-                            <span class="text-xl">▶️</span>
+                        <button onclick="runWorkflow()" class="w-full btn-primary flex items-center justify-center gap-2" style="text-decoration: none; padding: 0.75rem 1.5rem;">
                             RUN WORKFLOW
                         </button>
-                        <p class="text-xs text-gray-500 mt-2 text-center">Execute this workflow in ComfyUI</p>
+                        <p class="text-xs mt-2 text-center" style="color: var(--nasa-gray);">Execute this workflow in ComfyUI</p>
                     </div>
                     
                     <!-- Checkpoints & LoRAs -->
-                    <h3 class="text-lg font-medium mb-3">Resources</h3>
+                    <h3 class="text-lg font-medium mb-3" style="color: var(--nasa-dark);">Resources</h3>
                     {f'''
                     <div class="mb-4">
-                        <h4 class="font-medium text-gray-700 mb-2">Checkpoints ({len(checkpoints)}):</h4>
+                        <h4 class="font-medium mb-2" style="color: var(--nasa-gray);">Checkpoints ({len(checkpoints)}):</h4>
                         <div class="space-y-1">
-                            {chr(10).join(f'<div class="bg-blue-50 px-3 py-2 rounded text-sm text-blue-800">🔷 {html_escape.escape(cp)}</div>' for cp in checkpoints)}
+                            {chr(10).join(f'<div class="neo-brutalist-card px-3 py-2 text-sm" style="border-color: var(--nasa-blue); color: var(--nasa-blue);">{html_escape.escape(cp)}</div>' for cp in checkpoints)}
                         </div>
                     </div>''' if checkpoints else ''}
                     
                     {f'''
                     <div class="mb-4">
-                        <h4 class="font-medium text-gray-700 mb-2">LoRAs ({len(loras)}):</h4>
+                        <h4 class="font-medium mb-2" style="color: var(--nasa-gray);">LoRAs ({len(loras)}):</h4>
                         <div class="space-y-1">
-                            {chr(10).join(f'<div class="bg-purple-50 px-3 py-2 rounded text-sm text-purple-800">🎭 {html_escape.escape(lora)}</div>' for lora in loras)}
+                            {chr(10).join(f'<div class="neo-brutalist-card px-3 py-2 text-sm" style="border-color: var(--nasa-orange); color: var(--nasa-orange);">{html_escape.escape(lora)}</div>' for lora in loras)}
                         </div>
                     </div>''' if loras else ''}
                     
                     <!-- Tags with editing capabilities -->
                     <div class="mb-4">
                         <div class="flex justify-between items-center mb-2">
-                            <h4 class="font-medium text-gray-700">Tags ({len(tags)}):</h4>
-                            <button onclick="addNewTag()" class="bg-green-500 text-white px-2 py-1 rounded text-xs hover:bg-green-600 transition-colors">
-                                + Add Tag
+                            <h4 class="font-medium" style="color: var(--nasa-gray);">Tags ({len(tags)}):</h4>
+                            <button onclick="addNewTag()" class="btn-primary" style="text-decoration: none; padding: 0.25rem 0.5rem; font-size: 0.75rem;">
+                                Add Tag
                             </button>
                         </div>
                         <div id="tags-container" class="flex flex-wrap gap-2 mb-2">
                             {' '.join(f'''
                             <span class="tag-item-wrapper relative">
-                                <span class="tag-item bg-gray-200 text-gray-800 px-2 py-1 rounded text-xs flex items-center gap-1 group">
+                                <span class="tag-custom flex items-center gap-1 group">
                                     <span class="tag-text cursor-pointer" onclick="editTag(this, '{html_escape.escape(tag)}')" title="Click to edit">{html_escape.escape(tag)}</span>
-                                    <button onclick="showDeleteConfirm(this, '{html_escape.escape(tag)}')" class="text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity ml-1" title="Delete tag">×</button>
+                                    <button onclick="showDeleteConfirm(this, '{html_escape.escape(tag)}')" class="opacity-0 group-hover:opacity-100 transition-opacity ml-1" style="color: var(--nasa-red);" title="Delete tag">×</button>
                                 </span>
-                                <div class="delete-confirm hidden absolute top-full left-0 mt-1 bg-white border border-red-300 rounded-md shadow-lg p-2 z-10 whitespace-nowrap">
-                                    <div class="text-xs text-gray-700 mb-2">Delete "{html_escape.escape(tag)}"?</div>
+                                <div class="delete-confirm hidden absolute top-full left-0 mt-1 neo-brutalist-card p-2 z-10 whitespace-nowrap">
+                                    <div class="text-xs mb-2" style="color: var(--nasa-dark);">Delete "{html_escape.escape(tag)}"?</div>
                                     <div class="flex gap-1">
-                                        <button onclick="confirmDelete(this, '{html_escape.escape(tag)}')" class="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600">Delete</button>
-                                        <button onclick="cancelDelete(this)" class="bg-gray-300 text-gray-700 px-2 py-1 rounded text-xs hover:bg-gray-400">Cancel</button>
+                                        <button onclick="confirmDelete(this, '{html_escape.escape(tag)}')" class="btn-secondary" style="text-decoration: none; padding: 0.25rem 0.5rem; font-size: 0.75rem; background: var(--nasa-red); color: var(--nasa-white); border-color: var(--nasa-red);">Delete</button>
+                                        <button onclick="cancelDelete(this)" class="btn-secondary" style="text-decoration: none; padding: 0.25rem 0.5rem; font-size: 0.75rem;">Cancel</button>
                                     </div>
                                 </div>
                             </span>
                             ''' for tag in tags)}
                         </div>
                         <div id="add-tag-form" class="hidden">
-                            <input type="text" id="new-tag-input" placeholder="Enter new tag..." class="px-2 py-1 text-xs border border-gray-300 rounded mr-2">
-                            <button onclick="saveNewTag()" class="bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600">Save</button>
+                            <input type="text" id="new-tag-input" placeholder="Enter new tag..." class="px-2 py-1 text-xs mr-2" style="border: 1px solid var(--nasa-gray); border-radius: 2px; background: var(--nasa-white); color: var(--nasa-dark);">
+                            <button onclick="saveNewTag()" class="btn-secondary" style="text-decoration: none; padding: 0.25rem 0.5rem; font-size: 0.75rem;">Save</button>
                             <button onclick="cancelAddTag()" class="bg-gray-500 text-white px-2 py-1 rounded text-xs hover:bg-gray-600 ml-1">Cancel</button>
                         </div>
                     </div>
                     
                     <!-- Client and Project Fields -->
                     <div class="mb-4">
-                        <h4 class="font-medium text-gray-700 mb-2">Project Information:</h4>
+                        <h4 class="font-medium mb-2" style="color: var(--nasa-gray);">Project Information:</h4>
                         <div class="space-y-2">
                             <div>
-                                <label class="block text-xs font-medium text-gray-600">Client:</label>
+                                <label class="block text-xs font-medium" style="color: var(--nasa-gray);">Client:</label>
                                 <input type="text" id="client-name" placeholder="Enter client name..." 
-                                       class="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                       class="w-full px-2 py-1 text-xs focus:outline-none"
+                                       style="border: 1px solid var(--nasa-gray); border-radius: 2px; background: var(--nasa-white); color: var(--nasa-dark);"
                                        value="{html_escape.escape('TODO: Load from database')}">
                             </div>
                             <div>
-                                <label class="block text-xs font-medium text-gray-600">Project:</label>
+                                <label class="block text-xs font-medium" style="color: var(--nasa-gray);">Project:</label>
                                 <input type="text" id="project-name" placeholder="Enter project name..." 
-                                       class="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                       class="w-full px-2 py-1 text-xs focus:outline-none"
+                                       style="border: 1px solid var(--nasa-gray); border-radius: 2px; background: var(--nasa-white); color: var(--nasa-dark);"
                                        value="{html_escape.escape('TODO: Load from database')}">
                             </div>
-                            <button onclick="saveProjectInfo()" class="bg-blue-500 text-white px-3 py-1 rounded text-xs hover:bg-blue-600 transition-colors">
-                                💾 Save Project Info
+                            <button onclick="saveProjectInfo()" class="btn-secondary" style="text-decoration: none; padding: 0.25rem 0.75rem; font-size: 0.75rem;">
+                                Save Project Info
                             </button>
                         </div>
                     </div>
@@ -276,9 +409,21 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
         // Copy functionality
         document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.copy-btn').forEach(button => {
-                button.addEventListener('click', function() {
-                    const copyText = this.getAttribute('data-copy-text');
-                    copyToClipboard(copyText, this);
+                button.addEventListener('click', function(event) {
+                    let copyText;
+                    let copyMode;
+                    
+                    if (event.shiftKey) {
+                        // SHIFT + Click: Copy full CLI command
+                        copyText = this.getAttribute('data-copy-text');
+                        copyMode = 'command';
+                    } else {
+                        // Normal Click: Copy just the value
+                        copyText = this.getAttribute('data-value') || this.getAttribute('data-copy-text');
+                        copyMode = 'value';
+                    }
+                    
+                    copyToClipboard(copyText, this, copyMode);
                 });
             });
             
@@ -290,22 +435,39 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
                     });
                 }
             });
+            
+            // Shift key detection for copy buttons hover state
+            document.addEventListener('keydown', function(event) {
+                if (event.key === 'Shift') {
+                    document.querySelectorAll('.copy-btn').forEach(button => {
+                        button.classList.add('shift-hover');
+                    });
+                }
+            });
+            
+            document.addEventListener('keyup', function(event) {
+                if (event.key === 'Shift') {
+                    document.querySelectorAll('.copy-btn').forEach(button => {
+                        button.classList.remove('shift-hover');
+                    });
+                }
+            });
         });
 
-        function copyToClipboard(text, button) {
+        function copyToClipboard(text, button, copyMode) {
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(text).then(() => {
-                    showCopySuccess(button);
+                    showCopySuccess(button, copyMode);
                 }).catch((err) => {
                     console.error('Clipboard API failed:', err);
-                    fallbackCopy(text, button);
+                    fallbackCopy(text, button, copyMode);
                 });
             } else {
-                fallbackCopy(text, button);
+                fallbackCopy(text, button, copyMode);
             }
         }
         
-        function fallbackCopy(text, button) {
+        function fallbackCopy(text, button, copyMode) {
             const textArea = document.createElement('textarea');
             textArea.value = text;
             textArea.style.position = 'fixed';
@@ -318,7 +480,7 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
             try {
                 const successful = document.execCommand('copy');
                 if (successful) {
-                    showCopySuccess(button);
+                    showCopySuccess(button, copyMode);
                 } else {
                     showCopyError(button);
                 }
@@ -330,16 +492,25 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
             document.body.removeChild(textArea);
         }
         
-        function showCopySuccess(button) {
+        function showCopySuccess(button, copyMode) {
             const originalText = button.innerHTML;
             const originalClass = button.className;
             
             button.innerHTML = '✓';
             button.className = button.className.replace('bg-gray-200', 'bg-green-500 text-white');
             
-            // Show toast
+            // Show toast with different messages based on copy mode
             const toast = document.getElementById('copyToast');
             if (toast) {
+                const messageSpan = toast.querySelector('span:last-child');
+                if (copyMode === 'command') {
+                    messageSpan.textContent = 'CLI command copied!';
+                } else if (copyMode === 'value') {
+                    messageSpan.textContent = 'Parameter value copied!';
+                } else {
+                    messageSpan.textContent = 'Copied to clipboard!';
+                }
+                
                 toast.style.transform = 'translateX(0)';
                 setTimeout(() => {
                     toast.style.transform = 'translateX(100%)';
@@ -603,6 +774,55 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
                 }
             });
         }
+
+        function openFileLocation(filePath) {
+            if (!filePath) {
+                const toast = document.createElement('div');
+                toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-orange);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                toast.textContent = 'No file path available';
+                document.body.appendChild(toast);
+                setTimeout(() => document.body.removeChild(toast), 2000);
+                return;
+            }
+
+            // Try different methods based on platform/browser
+            if (navigator.platform.indexOf('Mac') !== -1) {
+                // macOS - try to open in Finder
+                fetch('/api/open-file-location', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ file_path: filePath })
+                }).then(response => {
+                    if (response.ok) {
+                        const toast = document.createElement('div');
+                        toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-blue);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                        toast.textContent = 'Opening file location...';
+                        document.body.appendChild(toast);
+                        setTimeout(() => document.body.removeChild(toast), 2000);
+                    } else {
+                        throw new Error('Failed to open file location');
+                    }
+                }).catch(error => {
+                    // Fallback: copy path to clipboard
+                    copyToClipboard(filePath);
+                    const toast = document.createElement('div');
+                    toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-orange);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                    toast.textContent = 'Could not open location, path copied instead';
+                    document.body.appendChild(toast);
+                    setTimeout(() => document.body.removeChild(toast), 3000);
+                });
+            } else {
+                // For other platforms, just copy to clipboard for now
+                copyToClipboard(filePath);
+                const toast = document.createElement('div');
+                toast.style.cssText = 'position:fixed;top:20px;right:20px;background:var(--nasa-blue);color:white;padding:8px 16px;border-radius:4px;z-index:1000;font-size:12px;';
+                toast.textContent = 'File path copied to clipboard';
+                document.body.appendChild(toast);
+                setTimeout(() => document.body.removeChild(toast), 2000);
+            }
+        }
     </script>
 </body>
 </html>'''
@@ -618,15 +838,15 @@ def generate_nodes_section_html(workflow_json):
     import html as html_escape
     
     if not workflow_json:
-        return '<div class="bg-white rounded-lg shadow-sm border p-6"><p class="text-gray-500">No workflow data available.</p></div>'
+        return '<div class="neo-brutalist-card p-6"><p style="color: var(--nasa-gray);">No workflow data available.</p></div>'
     
     # Sort nodes by ID for consistent display
     sorted_nodes = sorted(workflow_json.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
     
     html = '''
         <!-- Node Analysis -->
-        <div class="bg-white rounded-lg shadow-sm border p-6 mb-8">
-            <h2 class="text-xl font-semibold mb-6">Node Analysis</h2>
+        <div class="neo-brutalist-card p-6 mb-8">
+            <h2 class="text-xl font-semibold mb-6" style="color: var(--nasa-dark);">Node Analysis</h2>
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
     '''
     
@@ -654,36 +874,35 @@ def generate_nodes_section_html(workflow_json):
                     key_params.append((param_name, param_value))
         
         html += f'''
-            <div class="node-card bg-white rounded-lg shadow-sm border p-4 hover:shadow-md transition-shadow">
+            <div class="node-card p-4">
                 <div class="flex items-center gap-2 mb-3">
-                    <span class="text-2xl">⚙️</span>
                     <div>
-                        <h3 class="font-bold text-lg text-gray-900">Node {node_id}</h3>
-                        <p class="text-sm text-gray-600">{html_escape.escape(class_type)}</p>
+                        <h3 class="font-bold text-lg" style="color: var(--nasa-dark);">Node {node_id}</h3>
+                        <p class="text-sm" style="color: var(--nasa-gray);">{html_escape.escape(class_type)}</p>
                     </div>
                 </div>
                 
-                <h4 class="font-medium text-gray-800 mb-2">{html_escape.escape(title)}</h4>
+                <h4 class="font-medium mb-2" style="color: var(--nasa-dark);">{html_escape.escape(title)}</h4>
                 
-                <div class="text-xs text-gray-500 mb-3">
-                    🔗 {len(connections)} inputs • ⚙️ {len(params)} params
+                <div class="text-xs mb-3" style="color: var(--nasa-gray);">
+                    {len(connections)} inputs • {len(params)} params
                 </div>
         '''
         
         # Show key parameters
         if key_params:
-            html += '<div class="bg-gray-50 rounded p-2 text-xs mb-3"><div class="font-medium mb-1">Key Parameters:</div>'
+            html += '<div class="neo-brutalist-card p-2 text-xs mb-3" style="border: 1px solid var(--nasa-gray);"><div class="font-medium mb-1" style="color: var(--nasa-dark);">Key Parameters:</div>'
             for param_name, param_value in key_params[:3]:  # Show first 3
                 value_str = str(param_value)
                 if len(value_str) > 20:
                     value_str = value_str[:17] + "..."
-                html += f'<div>{html_escape.escape(param_name)}: {html_escape.escape(value_str)}</div>'
+                html += f'<div style="color: var(--nasa-dark);">{html_escape.escape(param_name)}: {html_escape.escape(value_str)}</div>'
             html += '</div>'
         
         # Expandable all parameters section
         html += '''
                 <details class="mt-3">
-                    <summary class="text-xs text-gray-600 cursor-pointer hover:text-gray-800">All parameters & CLI commands</summary>
+                    <summary class="text-xs cursor-pointer" style="color: var(--nasa-gray);">All parameters & CLI commands</summary>
                     <div class="mt-2 text-xs space-y-1">
         '''
         
@@ -714,12 +933,13 @@ def generate_nodes_section_html(workflow_json):
                                 <span class="font-medium">{html_escape.escape(param_name)}:</span>
                                 <div class="flex items-center gap-1">
                                     <span class="text-gray-600 break-all" title="{escaped_value}">{html_escape.escape(value_str)}</span>{dropdown_hint}
-                                    <button class="copy-btn ml-1 px-1 py-0.5 text-xs bg-gray-200 rounded hover:bg-blue-500 hover:text-white transition-colors" 
+                                    <button class="copy-btn ml-1" 
                                             data-copy-text="{escaped_copy_command}"
+                                            data-value="{escaped_value}"
                                             id="{copy_id}"
-                                            title="Copy CLI command"
-                                            aria-label="Copy command line argument">
-                                        📋
+                                            title="Copy value (SHIFT+Click for CLI command)"
+                                            aria-label="Copy parameter value or command">
+                                        CPY
                                     </button>
                                 </div>
                             </div>
@@ -750,19 +970,8 @@ def generate_nodes_section_html(workflow_json):
             
             <!-- Command Line Reference -->
             <div class="mt-8 p-6 bg-blue-50 rounded-lg">
-                <h3 class="text-xl font-semibold mb-4">💡 Command Line Reference</h3>
-                <div class="mb-4 p-3 bg-white rounded-lg">
-                    <div class="text-sm text-blue-800 font-medium mb-2">Pro Tips:</div>
-                    <ul class="text-xs text-blue-700 space-y-1">
-                        <li>• Click the 📋 button next to any parameter to copy its CLI command</li>
-                        <li>• Look for ⚠️ icons to identify dropdown/enum parameters</li>
-                        <li>• Parameters with → symbols are node connections (not CLI modifiable)</li>
-                        <li>• Use the copied commands with your ComfyUI CLI tools</li>
-                    </ul>
-                </div>
+                <h3 class="text-xl font-semibold mb-4" style="color: var(--nasa-dark);">Command Line Reference</h3>
                 
-                <div class="text-sm text-gray-700 mb-4">Example commands for key nodes:</div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
     '''
     
     # Show example commands for first few nodes
