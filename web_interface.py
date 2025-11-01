@@ -331,6 +331,14 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
                         </button>
                         <p class="text-xs mt-2 text-center" style="color: var(--nasa-gray);">Execute this workflow in ComfyUI</p>
                     </div>
+
+                    <!-- REMOVE WORKFLOW Button -->
+                    <div class="mb-6">
+                        <button onclick="removeWorkflow()" class="w-full btn-danger flex items-center justify-center gap-2" style="text-decoration: none; padding: 0.75rem 1.5rem;">
+                            REMOVE FROM DATABASE
+                        </button>
+                        <p class="text-xs mt-2 text-center" style="color: var(--nasa-gray);">Remove catalog entry (files preserved)</p>
+                    </div>
                     
                     <!-- Checkpoints & LoRAs -->
                     <h3 class="text-lg font-medium mb-3" style="color: var(--nasa-dark);">Resources</h3>
@@ -735,6 +743,34 @@ def generate_workflow_detail_html(workflow, workflow_json, checkpoints, loras):
         // Workflow execution (placeholder)
         function runWorkflow() {
             alert('🚀 Workflow execution feature coming soon!\\n\\nThis will integrate with ComfyUI API to run the workflow with current parameters.');
+        }
+
+        // Remove workflow from database
+        async function removeWorkflow() {
+            const workflowName = document.querySelector('h1').textContent;
+            
+            if (!confirm(`Remove "${workflowName}" from the database?\\n\\nThis will delete the catalog entry but preserve all original files.`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/workflows/${workflowId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    alert(result.message + '\\n\\n' + result.note);
+                    // Redirect to catalog
+                    window.location.href = '/catalog';
+                } else {
+                    const error = await response.json();
+                    alert('Failed to remove workflow: ' + (error.detail || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error removing workflow:', error);
+                alert('Failed to remove workflow: Network error');
+            }
         }
 
         // Utility functions
@@ -2490,6 +2526,39 @@ async def delete_workflow_tag(workflow_id: str, request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.delete("/api/workflows/{workflow_id}")
+async def delete_workflow(workflow_id: str):
+    """Delete a workflow from the database (files remain untouched)."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        db_manager = get_database_manager()
+        with db_manager.get_session() as session:
+            workflow = session.query(WorkflowFile).filter(WorkflowFile.id == workflow_id).first()
+            if not workflow:
+                raise HTTPException(status_code=404, detail="Workflow not found")
+            
+            filename = workflow.filename
+            logger.info(f"Removing workflow '{filename}' from database (files preserved)")
+            
+            # Delete the workflow record (cascading will handle relationships)
+            session.delete(workflow)
+            session.commit()
+            
+            return {
+                "success": True, 
+                "message": f"Workflow '{filename}' removed from database",
+                "note": "Original files remain untouched"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting workflow {workflow_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.put("/api/workflows/{workflow_id}/tags")
 async def update_workflow_tag(workflow_id: str, request: dict):
     """Update a tag in a workflow."""
@@ -2647,7 +2716,7 @@ async def admin_status():
     return {
         "status": "ok",
         "database_available": DATABASE_AVAILABLE,
-        "endpoints": ["deduplicate-tags", "clean-auto-tags", "migrate-tags-to-relations"]
+        "endpoints": ["deduplicate-tags", "clean-auto-tags", "migrate-tags-to-relations", "bulk-remove-workflows"]
     }
 
 
@@ -2702,6 +2771,53 @@ async def migrate_tags_to_relations():
         
     except Exception as e:
         logger.error(f"Error migrating tags to relations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/bulk-remove-workflows")
+async def admin_bulk_remove_workflows(request: dict):
+    """Admin endpoint to bulk remove workflows from database (files preserved)."""
+    if not DATABASE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        workflow_ids = request.get("workflow_ids", [])
+        if not workflow_ids:
+            raise HTTPException(status_code=400, detail="workflow_ids array is required")
+        
+        db_manager = get_database_manager()
+        removed_count = 0
+        failed_count = 0
+        
+        with db_manager.get_session() as session:
+            for workflow_id in workflow_ids:
+                try:
+                    workflow = session.query(WorkflowFile).filter(WorkflowFile.id == workflow_id).first()
+                    if workflow:
+                        filename = workflow.filename
+                        session.delete(workflow)
+                        removed_count += 1
+                        logger.info(f"Admin removed workflow '{filename}' from database (files preserved)")
+                    else:
+                        failed_count += 1
+                except Exception as e:
+                    logger.error(f"Error removing workflow {workflow_id}: {e}")
+                    failed_count += 1
+            
+            session.commit()
+        
+        return {
+            "success": True,
+            "removed_count": removed_count,
+            "failed_count": failed_count,
+            "message": f"Bulk removal complete: {removed_count} removed, {failed_count} failed",
+            "note": "Original files remain untouched"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in bulk workflow removal: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3860,6 +3976,9 @@ async def catalog_page():
                 <button onclick="bulkAddToCollection()" class="btn-primary">
                     ADD TO COLLECTION
                 </button>
+                <button onclick="bulkRemoveWorkflows()" class="btn-danger">
+                    REMOVE SELECTED
+                </button>
                 <button onclick="clearSelection()" class="btn-secondary">
                     Clear Selection
                 </button>
@@ -4521,16 +4640,48 @@ async def catalog_page():
                         </div>
                     </div>
                     
-                    <div class="card-buttons p-6 pt-0">
-                        <div class="flex gap-3">
+                    <!-- Compact buttons and ID section at bottom -->
+                    <div class="card-buttons px-6 pb-3 pt-2">
+                        <!-- Main action buttons - compact and less tall -->
+                        <div class="flex gap-2 mb-2">
                             <button onclick="viewWorkflow('${workflow.id}')" 
-                                    class="btn-primary flex-1 text-xs">
+                                    class="btn-primary flex-1 text-s py-1" 
+                                    style="padding-top: 4px; padding-bottom: 4px;">
                                 WORKFLOW DETAILS
                             </button>
                             <button onclick="downloadWorkflow('${workflow.id}', '${workflow.name || workflow.filename}')" 
-                                    class="btn-secondary flex-1 text-xs">
-                                DOWNLOAD WORKFLOW
+                                    class="btn-secondary text-s px-2 py-1" 
+                                    style="padding-top: 4px; padding-bottom: 4px;min-width: 50px;">
+                                DWN WFL
                             </button>
+                        </div>
+                        
+                        <!-- Delete button and ID on same row -->
+                        <div class="flex justify-between items-center">
+                            <div class="text-xs font-mono opacity-50" style="color: var(--nasa-dark-gray); font-size: 10px;">
+                                ${workflow.id}
+                            </div>
+                            <div class="workflow-delete-wrapper relative">
+                                <button onclick="showWorkflowDeleteConfirm(this, '${workflow.id}', '${(workflow.name || workflow.filename).replace(/'/g, "\\'")}')" 
+                                        class="btn-danger text-xs px-3 py-1" 
+                                        style="background: #cc0000; border: 1px solid #990000; color: white; font-size: 10px; font-weight: bold;">
+                                    DEL
+                                </button>
+                                <div class="workflow-delete-confirm confirmation-dialog hidden absolute top-full right-0 mt-2 p-3 z-50 whitespace-nowrap" 
+                                     style="background: var(--nasa-white); border: 2px solid var(--nasa-red); color: var(--nasa-dark);">
+                                    <div class="text-xs font-bold mb-2 uppercase">REMOVE "${(workflow.name || workflow.filename).toUpperCase()}"?</div>
+                                    <div class="text-xs mb-3" style="color: var(--nasa-gray);">Database entry only - files preserved</div>
+                                    <div class="flex gap-2">
+                                        <button onclick="confirmWorkflowDelete(this, '${workflow.id}', '${(workflow.name || workflow.filename).replace(/'/g, "\\'")}')" 
+                                                class="btn-danger text-xs px-2 py-1" 
+                                                style="background: #cc0000; border: 1px solid #990000; color: white; font-weight: bold;">REMOVE</button>
+                                        <button onclick="cancelWorkflowDelete(this)" 
+                                                class="btn-secondary text-xs px-2 py-1">CANCEL</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                         </div>
                     </div>
                 `;
@@ -4573,6 +4724,73 @@ async def catalog_page():
                 link.href = `${API_BASE}/workflows/${workflowId}/download`;
                 link.download = `${filename}_workflow.json`;
                 link.click();
+            }
+
+            // Workflow deletion confirmation functions
+            function showWorkflowDeleteConfirm(button, workflowId, filename) {
+                // Hide any other open confirmations
+                document.querySelectorAll('.workflow-delete-confirm').forEach(confirm => {
+                    confirm.classList.add('hidden');
+                });
+                
+                const deleteWrapper = button.closest('.workflow-delete-wrapper');
+                const confirmDiv = deleteWrapper.querySelector('.workflow-delete-confirm');
+                confirmDiv.classList.remove('hidden');
+            }
+
+            function cancelWorkflowDelete(button) {
+                const confirmDiv = button.closest('.workflow-delete-confirm');
+                confirmDiv.classList.add('hidden');
+            }
+
+            async function confirmWorkflowDelete(button, workflowId, filename) {
+                // Hide the confirmation
+                const confirmDiv = button.closest('.workflow-delete-confirm');
+                confirmDiv.classList.add('hidden');
+                
+                // Perform the actual deletion
+                await removeSingleWorkflow(workflowId, filename);
+            }
+
+            async function removeSingleWorkflow(workflowId, filename) {
+                try {
+                    const response = await fetch(`${API_BASE}/workflows/${workflowId}`, {
+                        method: 'DELETE'
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        showToast(result.message, 'success');
+                        
+                        // Remove the card from the UI with animation
+                        const card = document.querySelector(`[data-workflow-id="${workflowId}"]`);
+                        if (card) {
+                            card.style.opacity = '0.5';
+                            card.style.transform = 'scale(0.95)';
+                            card.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+                            
+                            setTimeout(() => {
+                                card.remove();
+                                
+                                // Update workflow count
+                                currentWorkflows = currentWorkflows.filter(w => w.id !== workflowId);
+                                updateWorkflowCount(currentWorkflows.length);
+                                
+                                // Show empty state if no workflows left
+                                if (currentWorkflows.length === 0) {
+                                    showEmpty();
+                                }
+                            }, 300);
+                        }
+                        
+                    } else {
+                        const error = await response.json();
+                        showToast('Failed to remove workflow: ' + (error.detail || 'Unknown error'), 'error');
+                    }
+                } catch (error) {
+                    console.error('Error removing workflow:', error);
+                    showToast('Failed to remove workflow: Network error', 'error');
+                }
             }
 
             // Tag management functions
@@ -4657,22 +4875,22 @@ async def catalog_page():
                 const container = document.getElementById(`tags-container-${workflowId}`);
                 
                 // Remove "No tags" placeholder if present
-                const noTagsSpan = container.querySelector('.text-gray-400');
-                if (noTagsSpan) {
+                const noTagsSpan = container.querySelector('span[style*="nasa-gray"]');
+                if (noTagsSpan && noTagsSpan.textContent.includes('NO TAGS ASSIGNED')) {
                     noTagsSpan.remove();
                 }
                 
                 const tagHtml = `
                     <span class="tag-item-wrapper-catalog relative inline-block">
-                        <span class="tag tag-editable bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs flex items-center gap-1 group" style="display: inline-flex;">
-                            <span class="tag-text">🏷️ ${tagValue}</span>
-                            <button onclick="showDeleteConfirmCatalog(this, '${tagValue.replace(/'/g, "\\'")}', '${workflowId}')" class="text-red-500 hover:text-red-700 opacity-0 group-hover:opacity-100 transition-opacity ml-1" title="Delete tag">×</button>
+                        <span class="tag-custom group" style="display: inline-flex; align-items: center; gap: 4px;">
+                            <span class="tag-text">${tagValue.toUpperCase()}</span>
+                            <button onclick="showDeleteConfirmCatalog(this, '${tagValue.replace(/'/g, "\\'")}', '${workflowId}')" class="btn-danger opacity-0 group-hover:opacity-100 transition-opacity text-xs px-1 py-0" title="Delete tag">×</button>
                         </span>
-                        <div class="delete-confirm hidden absolute top-full left-0 mt-1 bg-white border border-red-300 rounded-md shadow-lg p-2 z-50 whitespace-nowrap">
-                            <div class="text-xs text-gray-700 mb-2">Delete "${tagValue}"?</div>
-                            <div class="flex gap-1">
-                                <button onclick="confirmDeleteCatalog(this, '${tagValue.replace(/'/g, "\\'")}', '${workflowId}')" class="bg-red-500 text-white px-2 py-1 rounded text-xs hover:bg-red-600">Delete</button>
-                                <button onclick="cancelDeleteCatalog(this)" class="bg-gray-300 text-gray-700 px-2 py-1 rounded text-xs hover:bg-gray-400">Cancel</button>
+                        <div class="delete-confirm confirmation-dialog hidden absolute top-full left-0 mt-2 p-3 z-50 whitespace-nowrap">
+                            <div class="text-xs font-bold mb-2 uppercase">DELETE "${tagValue.toUpperCase()}"?</div>
+                            <div class="flex gap-2">
+                                <button onclick="confirmDeleteCatalog(this, '${tagValue.replace(/'/g, "\\'")}', '${workflowId}')" class="btn-danger text-xs px-2 py-1">DELETE</button>
+                                <button onclick="cancelDeleteCatalog(this)" class="btn-secondary text-xs px-2 py-1">CANCEL</button>
                             </div>
                         </div>
                     </span>
@@ -4789,6 +5007,55 @@ async def catalog_page():
             function bulkAddToCollection() {
                 if (selectedWorkflows.size === 0) return;
                 openCollectionPicker(Array.from(selectedWorkflows));
+            }
+
+            async function bulkRemoveWorkflows() {
+                if (selectedWorkflows.size === 0) return;
+                
+                const count = selectedWorkflows.size;
+                const plural = count === 1 ? 'workflow' : 'workflows';
+                
+                if (!confirm(`Remove ${count} ${plural} from the database?\\n\\nThis will delete the catalog entries but preserve all original files.`)) {
+                    return;
+                }
+                
+                const workflowIds = Array.from(selectedWorkflows);
+                let successCount = 0;
+                let failedCount = 0;
+                
+                for (const workflowId of workflowIds) {
+                    try {
+                        const response = await fetch(`${API_BASE}/workflows/${workflowId}`, {
+                            method: 'DELETE'
+                        });
+                        
+                        if (response.ok) {
+                            successCount++;
+                            // Remove the card from the UI
+                            const card = document.querySelector(`[data-workflow-id="${workflowId}"]`);
+                            if (card) {
+                                card.remove();
+                            }
+                        } else {
+                            failedCount++;
+                        }
+                    } catch (error) {
+                        failedCount++;
+                    }
+                }
+                
+                // Update current workflows and clear selection
+                currentWorkflows = currentWorkflows.filter(w => !workflowIds.includes(w.id));
+                clearSelection();
+                toggleBulkSelectMode(); // Exit bulk mode
+                updateWorkflowCount(currentWorkflows.length);
+                
+                // Show results
+                if (failedCount === 0) {
+                    showToast(`Successfully removed ${successCount} ${plural}`, 'success');
+                } else {
+                    showToast(`Removed ${successCount}, failed ${failedCount}`, 'error');
+                }
             }
 
             // Collection Management Functions
@@ -4989,6 +5256,7 @@ def get_interface_html() -> str:
             --nasa-red: #fc3d21;
             --nasa-blue: #105bd8;
             --nasa-gray: #aeb0b5;
+            --nasa-dark-gray: #6b6b6b;
             --nasa-white: #ffffff;
             --nasa-dark: #212121;
             --nasa-orange: #ff9d1e;
