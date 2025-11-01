@@ -1,5 +1,9 @@
 # Ignore all generated catalog files in this folder
 # Keep this .gitignore so the folder can be present in git
+database/*.db-*
+*__pycache__*
+database/comfy_light_table.db
+comfy-light-table.code-workspace
 
 !.gitignore
 

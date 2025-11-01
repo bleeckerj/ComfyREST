@@ -2032,6 +2032,19 @@ def directory_scan_mode(args):
     
     # Phase 4: Generate master catalog
     master_catalog_name = args.master_catalog or "index.html"
+    
+    # Choose catalog type based on database availability
+    if database_enabled and workflow_images:
+        # NEW: Generate database-powered interactive catalog
+        print(f"\n💾 Generating database-powered interactive catalog...")
+        try:
+            from database_catalog_generator import generate_database_catalog_from_cli_args
+            return generate_database_catalog_from_cli_args(args)
+        except ImportError:
+            print(f"⚠️ Database catalog generator not available, falling back to static catalog")
+            # Fall through to static catalog generation
+    
+    # LEGACY: Generate static HTML catalog
     if args.workflows_only or not analysis_results:
         # Limited catalog with only successful workflows
         master_path = generate_master_catalog(workflow_images, individual_pages, output_dir, master_catalog_name)
